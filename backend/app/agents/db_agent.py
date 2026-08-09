@@ -1,8 +1,11 @@
 from typing import List
+import logging
 from app.agents.base import BaseAgent
 from app.mother.types import AgentTask, AgentResult
 from app.services.student_service import student_service
 from app.contracts.students import StudentRecord
+
+logger = logging.getLogger(__name__)
 
 
 class DBAgent(BaseAgent):
@@ -18,6 +21,36 @@ class DBAgent(BaseAgent):
         dept_filter = structured_intent.get("department")
         status_filter = structured_intent.get("status_filter")
         limit_val: int = structured_intent.get("limit") or 100
+
+        # ── Data source: file-parsed records take priority over main DB ──
+        parsed_records: list = structured_intent.get("parsed_records") or []
+        if parsed_records:
+            logger.info(
+                "DBAgent using %d file-parsed records from InputAgent", len(parsed_records)
+            )
+            # Convert raw dicts to StudentRecord objects for uniform filtering
+            source_students: List[StudentRecord] = []
+            for idx, rec in enumerate(parsed_records):
+                try:
+                    # Auto-fill required fields that may be missing from file data
+                    rec.setdefault("roll_number", rec.get("id", f"FILE-{idx+1:04d}"))
+                    rec.setdefault("id", rec.get("roll_number", f"FILE-{idx+1:04d}"))
+                    rec.setdefault("name", "Unknown")
+                    rec.setdefault("department", "Computer Science")
+                    rec.setdefault("cgpa", 0.0)
+                    rec.setdefault("semester", 1)
+                    rec.setdefault("attendance", 0.0)
+                    rec.setdefault("email", f"{rec.get('name', 'unknown').lower().replace(' ', '.')}@campus.edu")
+                    rec.setdefault("status", "Active")
+                    rec.setdefault("backlogs", 0)
+                    source_students.append(StudentRecord.model_validate(rec))
+                except Exception as e:
+                    logger.warning("Skipping invalid parsed record: %s — %s", rec, e)
+
+        else:
+            # Fall back to the main in-memory database
+            source_students = student_service.get_students()
+
 
         # Unified filters list from InputAgent (may include cgpa, attendance, etc.)
         unified_filters: list = structured_intent.get("filters") or []
@@ -52,11 +85,10 @@ class DBAgent(BaseAgent):
             f"ORDER BY {sort_field} {order_dir} LIMIT {limit_val};"
         )
 
-        # ── Query in-memory StudentService ──
-        all_students = student_service.get_students()
+        # ── Query the source (file-parsed records OR database) ──
         filtered: List[StudentRecord] = []
 
-        for student in all_students:
+        for student in source_students:
             if dept_filter and student.department != dept_filter:
                 continue
             if status_filter and student.status != status_filter:
@@ -64,6 +96,7 @@ class DBAgent(BaseAgent):
             if not _apply_filters(student, unified_filters):
                 continue
             filtered.append(student)
+
 
         # Sort
         try:

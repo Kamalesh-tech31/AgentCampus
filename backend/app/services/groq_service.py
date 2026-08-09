@@ -129,3 +129,86 @@ class GroqService:
         except Exception as exc:
             logger.error(f"[Groq] API error or validation failure: {exc}")
             return None
+
+    def extract_data_from_image(self, image_path: str) -> Optional[dict]:
+        """
+        Sends an image to Groq's Vision LLM to extract either a natural language query
+        or structured student records.
+        """
+        if not self.client:
+            logger.info("[Groq] API unavailable or unconfigured for image extraction.")
+            return None
+
+        import base64
+        import mimetypes
+
+        logger.info(f"[Groq] Extracting data from image: {image_path}")
+
+        try:
+            # 1. Base64 encode the image
+            with open(image_path, "rb") as image_file:
+                base64_image = base64.b64encode(image_file.read()).decode("utf-8")
+
+            mime_type, _ = mimetypes.guess_type(image_path)
+            mime_type = mime_type or "image/jpeg"
+
+            # 2. Call Groq vision API
+            vision_prompt = (
+                "Analyze this image. It contains either a natural language query (text) about students, "
+                "or a table/list of student records.\n\n"
+                "Extract the content and return ONLY a JSON object matching this schema:\n"
+                "{\n"
+                '  "type": "table" | "query",\n'
+                '  "query": "the extracted text query if type is query, else null",\n'
+                '  "records": [\n'
+                "    {\n"
+                '      "name": "Student Full Name",\n'
+                '      "department": "Computer Science" | "Electronics" | "Mechanical" | "Civil" | "Data Science" | "AI & ML",\n'
+                '      "cgpa": float (between 0.0 and 10.0),\n'
+                '      "attendance": float (between 0.0 and 100.0),\n'
+                '      "status": "Active" | "Probation" | "Graduated",\n'
+                '      "roll_number": "Roll number string if present, else empty/null",\n'
+                '      "semester": int (between 1 and 8 if present, else null),\n'
+                '      "email": "Email string if present, else null",\n'
+                '      "backlogs": int (>=0 if present, else null),\n'
+                '      "project_title": "Project title string if present, else null"\n'
+                "    }\n"
+                "  ]\n"
+                "}\n\n"
+                "Return raw valid JSON only. Do not wrap in markdown code blocks."
+            )
+
+            response = self.client.chat.completions.create(
+                model="llama-3.2-11b-vision-preview",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": vision_prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{mime_type};base64,{base64_image}"
+                                },
+                            },
+                        ],
+                    }
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.1,
+            )
+
+            raw_content = response.choices[0].message.content
+            if not raw_content:
+                logger.warning("[Groq Vision] Empty response from vision model.")
+                return None
+
+            import json
+            data = json.loads(raw_content)
+            logger.info(f"[Groq Vision] Successfully parsed image of type: {data.get('type')}")
+            return data
+
+        except Exception as exc:
+            logger.error(f"[Groq Vision] Error extracting data from image: {exc}")
+            return None
+

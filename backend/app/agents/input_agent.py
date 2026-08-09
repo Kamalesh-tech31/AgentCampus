@@ -2,20 +2,30 @@
 InputAgent — translates natural-language user queries into structured query
 specifications consumed by downstream agents (DBAgent, AnalyticsAgent).
 
+Supports three input modes:
+  1. Natural language text query  (original mode)
+  2. Path to an Excel file (.xlsx) containing a student table or NL query
+  3. Path to a PDF file   (.pdf)  containing a student table or NL query
+  4. Path to an image     (.png/.jpg/.jpeg) — OCR via Groq Vision API
+
 Pipeline:
-  Raw query → normalize → detect operation → extract entities →
-  extract filters → extract comparisons → extract sort → extract limit →
-  extract fields → extract analytics hints → validate → structured result
+  Raw query / file path
+    → [if file] parse file → extract records or NL query
+    → normalize → detect operation → extract entities → extract filters
+    → extract sort → extract limit → extract fields → extract analytics hints
+    → validate → structured result
 
 Must NOT: query DB · execute SQL · compute analytics · generate final output ·
-           replace MotherAgent · make additional LLM calls.
+           replace MotherAgent · make additional LLM calls (except Vision for images).
 """
 import logging
 import re
 from typing import Optional
 
 from app.agents.base import BaseAgent
+from app.agents.file_parser import is_supported_file, parse_file
 from app.mother.types import AgentTask, AgentResult
+from app.services.groq_service import GroqService
 
 logger = logging.getLogger(__name__)
 
@@ -678,14 +688,17 @@ class InputAgent(BaseAgent):
 
     name = "input"
 
-    def execute(self, task: AgentTask) -> AgentResult:
-        query: str = task.input_data.get("user_query", "")
+    def execute(self, task: AgentTask) -> AgentResult:  # noqa: C901
+        raw_input: str = (
+            task.input_data.get("user_query", "")
+            or task.input_data.get("file_path", "")
+        )
 
         logger.info("InputAgent started — task_id=%s", task.task_id)
 
-        # ── Reject empty / whitespace-only queries ──
-        if not query or not query.strip():
-            logger.warning("InputAgent received empty query — task_id=%s", task.task_id)
+        # ── Reject empty / whitespace-only input ──
+        if not raw_input or not raw_input.strip():
+            logger.warning("InputAgent received empty input — task_id=%s", task.task_id)
             return AgentResult(
                 task_id=task.task_id,
                 agent=self.name,
@@ -693,10 +706,50 @@ class InputAgent(BaseAgent):
                 error="Empty or whitespace-only query received.",
             )
 
+        # ── Detect if input is a path to a supported file ──
+        file_path = raw_input.strip().strip('"').strip("'")
+        parsed_records: Optional[list] = None
+        source_type: str = "text"
+
+        if is_supported_file(file_path):
+            logger.info("InputAgent detected file input: '%s'", file_path)
+            source_type = "file"
+
+            # Initialise GroqService only for image files
+            import os
+            ext = os.path.splitext(file_path)[1].lower()
+            groq_svc = GroqService() if ext in (".png", ".jpg", ".jpeg") else None
+
+            parsed = parse_file(file_path, groq_service=groq_svc)
+
+            if parsed is None:
+                return AgentResult(
+                    task_id=task.task_id,
+                    agent=self.name,
+                    status="failed",
+                    error=f"Failed to parse file: '{file_path}'. Check format and content.",
+                )
+
+            if parsed["type"] == "table":
+                # File contained a student table → attach records, use empty NL pipeline
+                parsed_records = parsed["records"]
+                raw_input = "show all parsed records"  # placeholder NL for pipeline
+                logger.info(
+                    "File parsed as table — %d records attached to structured_intent",
+                    len(parsed_records),
+                )
+            else:
+                # File contained a NL query → use it as the actual query
+                raw_input = parsed["query"]
+                logger.info(
+                    "File parsed as NL query: '%s'", raw_input[:120]
+                )
+
+        # ── NL pipeline (runs for both text queries and file-derived queries) ──
+        query = raw_input
         query_lower = normalize_prompt(query)
         logger.info("InputAgent normalised query: '%s'", query_lower[:200])
 
-        # ── Extract all structured components ──
         operation = detect_operation(query_lower)
         department = extract_department(query_lower)
         cgpa_filters = extract_cgpa_filter(query_lower)
@@ -709,7 +762,6 @@ class InputAgent(BaseAgent):
             extract_analytics_hint(query_lower) if operation == "analytics" else None
         )
 
-        # Collect all filter conditions
         all_filters = cgpa_filters + attendance_filters
 
         # ── Ambiguity detection ──
@@ -724,29 +776,27 @@ class InputAgent(BaseAgent):
             sort = {"field": "cgpa", "direction": "desc"}
             logger.info("Ambiguous query resolved with default: %s", ambiguity_reason)
 
-        # ── Default sort when a limit is specified (top-N implies ordering) ──
         if limit is not None and sort is None:
             sort = {"field": "cgpa", "direction": "desc"}
             logger.info("Default sort applied (cgpa desc) because limit=%s given", limit)
 
-        # ── Backward-compatible min_cgpa for DBAgent ──
         min_cgpa = _derive_min_cgpa(cgpa_filters)
-
-        # ── Security note ──
-        # Raw query is preserved only for traceability in original_query.
-        # No raw user text is used as executable SQL.
 
         structured_intent: dict = {
             # ── Core ──
             "operation": operation,
-            "original_query": query,
+            "original_query": (
+                file_path if source_type == "file" else query
+            ),
+            "source_type": source_type,     # "text" | "file"
+            # ── File-parsed records (if a table was extracted from a file) ──
+            # DBAgent will filter/sort these instead of the main database.
+            "parsed_records": parsed_records,
             # ── Department ──
             "department": department,
             # ── Unified filter list ──
-            # Each entry: {"field": str, "operator": str, "value": float}
-            # Invalid entries carry a "validation_error" key and are skipped by DBAgent.
             "filters": all_filters,
-            # ── Sort spec ──
+            # ── Sort ──
             "sort": sort,
             # ── Limit ──
             "limit": limit,
@@ -754,25 +804,26 @@ class InputAgent(BaseAgent):
             "fields": fields if fields else None,
             # ── Status / probation ──
             "status_filter": status_filter,
-            # ── Analytics parameters (MotherAgent decides if AnalyticsAgent runs) ──
+            # ── Analytics ──
             "analytics_hint": analytics_hint,
             # ── Ambiguity ──
             "ambiguous": ambiguous,
             "ambiguity_reason": ambiguity_reason,
-            # ── Backward-compatibility keys (existing DBAgent + tests depend on these) ──
+            # ── Backward-compatibility ──
             "intent": "student_update" if operation == "write" else "student_query",
             "min_cgpa": min_cgpa,
         }
 
         logger.info(
-            "InputAgent completed — operation=%s dept=%s "
-            "filters=%s sort=%s limit=%s fields=%s",
+            "InputAgent completed — source=%s operation=%s dept=%s "
+            "filters=%s sort=%s limit=%s parsed_records=%s",
+            source_type,
             operation,
             department,
             all_filters,
             sort,
             limit,
-            fields or None,
+            len(parsed_records) if parsed_records else None,
         )
 
         return AgentResult(
