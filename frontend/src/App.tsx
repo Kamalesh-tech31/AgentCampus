@@ -21,8 +21,8 @@ const INITIAL_AGENTS: Record<AgentType, AgentState> = {
     id: 'input',
     name: 'Input Agent',
     role: 'Natural Language Intent Parser',
-    badge: 'gemini-3.6-flash',
-    model: 'gemini-3.6-flash',
+    badge: 'groq-llama3-70b',
+    model: 'groq-llama3-70b',
     status: 'waiting',
     statusMessage: 'Waiting for natural language input...',
     logs: []
@@ -31,8 +31,8 @@ const INITIAL_AGENTS: Record<AgentType, AgentState> = {
     id: 'mother',
     name: 'Mother Agent',
     role: 'Orchestrator & Dynamic Plan Synthesizer',
-    badge: 'gemini-3.6-flash',
-    model: 'gemini-3.6-flash',
+    badge: 'groq-llama3-70b',
+    model: 'groq-llama3-70b',
     status: 'waiting',
     statusMessage: 'Waiting for structured intent from Input Agent...',
     logs: []

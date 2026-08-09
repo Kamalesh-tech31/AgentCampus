@@ -31,4 +31,4 @@ def test_input_agent():
     result = registry.get("input").execute(task)
 
     assert result.status == "completed"
-    assert "sql" in result.result
+    assert "structured_intent" in result.result

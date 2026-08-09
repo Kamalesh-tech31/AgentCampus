@@ -3,3 +3,4 @@ uvicorn[standard]
 crewai
 pydantic
 python-dotenv
+groq
