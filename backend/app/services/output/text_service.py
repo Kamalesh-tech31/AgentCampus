@@ -106,12 +106,18 @@ def _generate_fallback_text(
     metrics: Optional[dict],
     insight: Optional[str],
     user_query: str = "",
+    pulse_data: Optional[dict] = None,
 ) -> str:
     """Deterministic fallback logic for text generation."""
     sections: list[str] = []
 
-    # ── Title ─────────────────────────────────────────────────────────────────
-    title = "STUDENT PERFORMANCE REPORT"
+    # ── Dynamic Title based on request ────────────────────────────────────────
+    title = "STUDENT ANALYSIS REPORT"
+    if pulse_data and pulse_data.get("analysis_type"):
+        title = f"{pulse_data['analysis_type'].replace('_', ' ').upper()} REPORT"
+    elif "at risk" in user_query.lower() or "attention" in user_query.lower():
+        title = "ACADEMIC RISK ASSESSMENT REPORT"
+
     sections.append("=" * 60)
     sections.append(title.center(60))
     sections.append("=" * 60)
@@ -119,47 +125,73 @@ def _generate_fallback_text(
     if user_query:
         sections.append(f"\nQuery: {user_query}\n")
 
-    # ── Metrics Summary ───────────────────────────────────────────────────────
-    if metrics:
-        sections.append("KEY STATISTICS:")
-        sections.append("-" * 40)
-        sections.append(_format_metrics(metrics))
-        sections.append("")
-
-    # ── Insight ───────────────────────────────────────────────────────────────
-    if insight:
-        sections.append("ANALYSIS INSIGHT:")
-        sections.append("-" * 40)
-        sections.append(f"  {insight}")
-        sections.append("")
-
-    # ── Records Table ─────────────────────────────────────────────────────────
-    if records:
-        sections.append(f"STUDENT RECORDS  ({len(records)} total):")
-        sections.append("-" * 40)
-        sections.append(_format_records_table(records))
-        sections.append("")
-
-    # ── At-Risk Students ─────────────────────────────────────────────────────
-    if records:
-        at_risk = [
-            r for r in records
-            if (r.get("status") == "Probation" or (r.get("cgpa", 10.0)) < 6.5)
-        ]
-        if at_risk:
-            sections.append(f"AT-RISK STUDENTS  ({len(at_risk)} identified):")
+    # ── Pulse Data summary ────────────────────────────────────────────────────
+    if pulse_data:
+        if pulse_data.get("summary"):
+            sections.append("SUMMARY:")
             sections.append("-" * 40)
-            for r in at_risk:
-                name = r.get("name", r.get("rollNumber", "Unknown"))
-                cgpa = r.get("cgpa", "?")
-                dept = r.get("department", "?")
-                status = r.get("status", "?")
-                cgpa_str = f"{cgpa:.2f}" if isinstance(cgpa, float) else str(cgpa)
-                sections.append(f"  • {name}  |  {dept}  |  CGPA: {cgpa_str}  |  Status: {status}")
+            sections.append(f"  {pulse_data['summary']}\n")
+
+        if pulse_data.get("findings"):
+            sections.append("FINDINGS:")
+            sections.append("-" * 40)
+            for f in pulse_data["findings"]:
+                sections.append(f"  • {f}")
             sections.append("")
 
+        if pulse_data.get("insights"):
+            sections.append("INSIGHTS:")
+            sections.append("-" * 40)
+            for ins in pulse_data["insights"]:
+                sections.append(f"  • {ins}")
+            sections.append("")
+
+        if pulse_data.get("tables"):
+            for tname, trows in pulse_data["tables"].items():
+                sections.append(f"TABLE: {humanize(tname).upper()} ({len(trows)} rows):")
+                sections.append("-" * 40)
+                sections.append(_format_records_table(trows))
+                sections.append("")
+    else:
+        # Fallback to legacy metrics
+        if metrics:
+            sections.append("KEY STATISTICS:")
+            sections.append("-" * 40)
+            sections.append(_format_metrics(metrics))
+            sections.append("")
+
+        if insight:
+            sections.append("ANALYSIS INSIGHT:")
+            sections.append("-" * 40)
+            sections.append(f"  {insight}")
+            sections.append("")
+
+        if records:
+            sections.append(f"STUDENT RECORDS  ({len(records)} total):")
+            sections.append("-" * 40)
+            sections.append(_format_records_table(records))
+            sections.append("")
+
+        # ── At-Risk Students Fallback ─────────────────────────────────────────
+        if records:
+            at_risk = [
+                r for r in records
+                if (r.get("status") == "Probation" or float(r.get("cgpa", 10.0)) < 6.5)
+            ]
+            if at_risk:
+                sections.append(f"AT-RISK STUDENTS  ({len(at_risk)} identified):")
+                sections.append("-" * 40)
+                for r in at_risk:
+                    name = r.get("name", r.get("rollNumber", "Unknown"))
+                    cgpa = r.get("cgpa", "?")
+                    dept = r.get("department", "?")
+                    status = r.get("status", "?")
+                    cgpa_str = f"{float(cgpa):.2f}" if isinstance(cgpa, (int, float)) else str(cgpa)
+                    sections.append(f"  • {name}  |  {dept}  |  CGPA: {cgpa_str}  |  Status: {status}")
+                sections.append("")
+
     # ── No Data Fallback ─────────────────────────────────────────────────────
-    if not records and not metrics:
+    if not records and not metrics and not pulse_data:
         sections.append("No data available for the requested query.")
 
     sections.append("=" * 60)
@@ -171,6 +203,7 @@ def generate_text(
     metrics: Optional[dict],
     insight: Optional[str],
     user_query: str = "",
+    pulse_data: Optional[dict] = None,
 ) -> str:
     """
     Generate structured plain-text output.
@@ -181,6 +214,7 @@ def generate_text(
         metrics:    OrchestrationMetrics dict from Pulse agent (or None).
         insight:    Natural-language insight string from Pulse agent (or None).
         user_query: Original user query for context header.
+        pulse_data: Pulse analytics result dictionary (or None).
 
     Returns:
         A multi-line string ready for display.
@@ -199,15 +233,23 @@ def generate_text(
         summary_data["metrics"] = metrics
     if insight:
         summary_data["insight"] = insight
-        
+    if pulse_data:
+        summary_data["pulse_data"] = {
+            "summary": pulse_data.get("summary"),
+            "findings": pulse_data.get("findings"),
+            "insights": pulse_data.get("insights"),
+            "table_names": list(pulse_data.get("tables", {}).keys()),
+            "chart_keys": list(pulse_data.get("chart_data", {}).keys()),
+        }
+
     data_summary = json.dumps(summary_data, indent=2)
 
     llm_text = groq_svc.generate_text_report(user_query, data_summary)
-    
+
     if llm_text:
         logger.info("[TextService] Using Groq LLM generated text report.")
         return llm_text
-        
+
     # ── Fallback ──────────────────────────────────────────────────────────────
     logger.info("[TextService] Using deterministic fallback generation.")
-    return _generate_fallback_text(records, metrics, insight, user_query)
+    return _generate_fallback_text(records, metrics, insight, user_query, pulse_data=pulse_data)

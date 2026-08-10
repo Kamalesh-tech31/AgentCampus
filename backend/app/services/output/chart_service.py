@@ -185,3 +185,56 @@ def department_breakdown_chart(dept_breakdown: dict) -> Optional[bytes]:
     except Exception as exc:
         logger.error(f"[ChartService] department_breakdown_chart error: {exc}")
         return None
+
+
+def render_dynamic_chart(chart_info: dict) -> Optional[bytes]:
+    """
+    Render any chart from the Pulse dynamic chart_data format.
+    Supports bar and pie charts.
+    """
+    if not _MATPLOTLIB_AVAILABLE or not chart_info:
+        return None
+
+    try:
+        chart_type = chart_info.get("type")
+        title = chart_info.get("title", "Chart")
+        labels = chart_info.get("labels", [])
+        values = chart_info.get("values", [])
+
+        if not labels or not values or len(labels) != len(values):
+            return None
+
+        # Clean None values
+        cleaned_pairs = [(l, float(v)) for l, v in zip(labels, values) if v is not None]
+        if not cleaned_pairs:
+            return None
+        labels, values = zip(*cleaned_pairs)
+        labels = list(labels)
+        values = list(values)
+
+        fig, ax = plt.subplots(figsize=(8, 4))
+
+        if chart_type == "pie":
+            # Distinct colors matching our theme (red/orange for risk, green for safe, etc.)
+            pie_colors = ["#c00000", "#2e75b6", "#27ae60", "#f39c12", "#8e44ad"][:len(labels)]
+            ax.pie(values, labels=labels, autopct="%1.1f%%", startangle=90, colors=pie_colors,
+                   textprops={'fontsize': 8})
+            ax.axis("equal")
+        else:
+            # Bar chart
+            bar_colors = ["#2e75b6"] * len(labels)
+            if "risk" in title.lower():
+                bar_colors = ["#c00000" if "risk" in str(l).lower() else "#2e75b6" for l in labels]
+            ax.bar(labels, values, color=bar_colors, edgecolor="white", width=0.5)
+            ax.set_ylabel(chart_info.get("y_label", "Value"), fontsize=9)
+            ax.set_xlabel(chart_info.get("x_label", "Category"), fontsize=9)
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+            plt.xticks(rotation=15, ha="right", fontsize=8)
+
+        ax.set_title(title, fontsize=11, fontweight="bold", pad=15)
+        fig.tight_layout()
+        return _png_bytes(fig)
+    except Exception as exc:
+        logger.error(f"[ChartService] render_dynamic_chart error: {exc}")
+        return None

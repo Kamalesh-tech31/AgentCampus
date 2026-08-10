@@ -202,6 +202,7 @@ def generate_excel(
     metrics: Optional[dict],
     insight: Optional[str],
     file_stem: str = "student_report",
+    pulse_data: Optional[dict] = None,
 ) -> dict:
     """
     Generate an Excel file and return file metadata.

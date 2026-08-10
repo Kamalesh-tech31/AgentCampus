@@ -176,6 +176,12 @@ class GroqService:
             "You are an expert Presentation Planner for AgentCampus.\n"
             "Your job is to analyze the user's request and the available data summary to create a structured PowerPoint presentation plan.\n\n"
             "You do NOT write python code. You only produce a structured JSON plan.\n\n"
+            "STRICT RULES:\n"
+            "1. NO FIXED OR GENERIC SLIDES. Do NOT automatically create generic slides like 'Executive Summary', 'Introduction', 'Key Statistics', 'CGPA Distribution', 'Department Breakdown', generic conclusions, or generic recommendations unless they are directly relevant to the user request.\n"
+            "2. DYNAMIC STORYLINE: The slide structure, titles, key points, charts, tables, and recommendations must be completely custom-tailored to the user query and the available data.\n"
+            "3. If the user asks about risk/probation, focus the entire presentation structure around risk analysis, at-risk students, and risk-related recommendations. Do not include unrelated stats slides.\n"
+            "4. For slides of type 'table': if the data summary lists specific tables (e.g. 'at_risk_students'), specify it as 'table' type with the table name in the slide's description/points. Scribe will render that specific table.\n"
+            "5. For slides of type 'chart': if the data summary lists specific charts (e.g. 'risk_pie', 'group_bar'), specify it in 'recommended_chart'. Otherwise, use 'cgpa_distribution', 'department_performance', or null.\n\n"
             "Available Slide Types:\n"
             "- title: The opening slide.\n"
             "- kpi_dashboard: For high-level statistics and metrics.\n"
@@ -184,26 +190,18 @@ class GroqService:
             "- insights: For analytical findings and textual summaries.\n"
             "- recommendation: For actionable advice.\n"
             "- conclusion: For the closing slide.\n\n"
-            "Available Charts (use ONLY these exact strings for recommended_chart, or null):\n"
-            "- cgpa_distribution\n"
-            "- department_performance\n\n"
-            "Rules:\n"
-            "1. Create only relevant slides. Do not create empty slides.\n"
-            "2. Keep key_points concise.\n"
-            "3. Dynamically choose slide layouts based on content.\n"
-            "4. NEVER invent data. Use ONLY the provided data summary.\n"
-            "5. Return a valid JSON matching this schema:\n"
+            "Return a valid JSON matching this schema:\n"
             "{\n"
-            '  "presentation_title": "...",\n'
-            '  "presentation_subtitle": "...",\n'
-            '  "presentation_style": "executive",\n'
+            '  "presentation_title": "Custom title fitting user request",\n'
+            '  "presentation_subtitle": "Custom subtitle",\n'
+            '  "presentation_style": "executive | analytical | modern",\n'
             '  "slides": [\n'
             '    {\n'
             '      "slide_title": "...",\n'
-            '      "slide_type": "title",\n'
+            '      "slide_type": "title | kpi_dashboard | chart | table | insights | recommendation | conclusion",\n'
             '      "key_points": ["...", "..."],\n'
             '      "insights": "Optional string or null",\n'
-            '      "recommended_chart": "cgpa_distribution",\n'
+            '      "recommended_chart": "Chart key or null",\n'
             '      "priority": 1\n'
             '    }\n'
             '  ]\n'
@@ -249,6 +247,12 @@ class GroqService:
             "You are an expert Report Planner for AgentCampus.\n"
             "Your job is to analyze the user's request and the available data summary to create a structured PDF report plan.\n\n"
             "You do NOT write python code. You only produce a structured JSON plan.\n\n"
+            "STRICT RULES:\n"
+            "1. NO FIXED OR GENERIC SECTIONS. Never automatically generate generic sections like 'Executive Summary', 'Introduction', 'Key Statistics', 'CGPA Distribution', 'Department Performance', generic conclusions, or generic recommendations unless they are directly relevant to the user request.\n"
+            "2. DYNAMIC CONTENT: The title, sections, charts, tables, insights, recommendations, and layout must be completely custom-tailored to the user query and the available data.\n"
+            "3. If the user asks about risk/probation, focus the entire report structure around risk analysis, at-risk students, and risk-related recommendations. Do not include unrelated department/academic statistics.\n"
+            "4. For sections of type 'table': if the data summary lists specific tables (e.g. 'at_risk_students'), set the 'content' field to that specific table name. If not, set it to 'all_records' or null.\n"
+            "5. For sections of type 'chart': if the data summary lists specific charts (e.g. 'risk_pie', 'group_bar'), specify it in 'recommended_chart'. Otherwise, use 'cgpa_distribution', 'department_performance', or null.\n\n"
             "Available Section Types:\n"
             "- summary: A text block summarizing context.\n"
             "- statistics: Key metrics and KPI list.\n"
@@ -256,24 +260,18 @@ class GroqService:
             "- table: A detailed data table.\n"
             "- insights: Analytical insights.\n"
             "- recommendations: Actionable advice.\n\n"
-            "Available Charts (use ONLY these exact strings for recommended_chart, or null):\n"
-            "- cgpa_distribution\n"
-            "- department_performance\n\n"
-            "Rules:\n"
-            "1. Create only relevant sections. Do not create empty sections if data is unavailable.\n"
-            "2. Ensure the report flows logically.\n"
-            "3. Return a valid JSON matching this schema:\n"
+            "Return a valid JSON matching this schema:\n"
             "{\n"
-            '  "report_title": "...",\n'
-            '  "report_type": "...",\n'
-            '  "executive_summary": "Optional short summary or null",\n'
+            '  "report_title": "Custom title fitting user request",\n'
+            '  "report_type": "Custom report type description",\n'
+            '  "executive_summary": "Tailored executive summary or null",\n'
             '  "sections": [\n'
             '    {\n'
-            '      "title": "...",\n'
+            '      "title": "Descriptive section title",\n'
             '      "type": "summary | statistics | table | chart | insights | recommendations",\n'
-            '      "content": "Optional string text or null",\n'
-            '      "data_priority": "Optional instruction for the renderer or null",\n'
-            '      "recommended_chart": "Optional chart type or null"\n'
+            '      "content": "Specific table/chart name or text content or null",\n'
+            '      "data_priority": "e.g., high, medium, low",\n'
+            '      "recommended_chart": "Chart key or null"\n'
             '    }\n'
             '  ]\n'
             "}"

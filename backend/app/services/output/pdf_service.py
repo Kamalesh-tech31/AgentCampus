@@ -97,6 +97,7 @@ def _build_styles():
         spaceAfter=6,
         fontName="Helvetica-Bold",
         borderPad=(0, 0, 2, 0),
+        keepWithNext=True,
     )
     styles["body"] = ParagraphStyle(
         "Body",
@@ -195,9 +196,51 @@ def _add_section_header(story: list, title: str, styles: dict, color=MID_BLUE):
     story.append(Spacer(1, 0.3 * cm))
 
 
-def _generate_fallback(story: list, records: list[dict], metrics: Optional[dict], insight: Optional[str], styles: dict):
+def _generate_fallback(story: list, records: list[dict], metrics: Optional[dict], insight: Optional[str], styles: dict, pulse_data: Optional[dict] = None):
     """Deterministic fallback logic for PDF generation."""
-    # ── Executive Summary ─────────────────────────────────────────────────────
+    if pulse_data:
+        # Dynamic fallback based on Pulse results
+        if pulse_data.get("summary"):
+            _add_section_header(story, "Executive Summary", styles)
+            story.append(Paragraph(pulse_data["summary"], styles["body"]))
+            story.append(Spacer(1, 0.5 * cm))
+
+        if pulse_data.get("findings"):
+            _add_section_header(story, "Key Findings", styles)
+            for f in pulse_data["findings"]:
+                story.append(Paragraph(f"• {f}", styles["bullet"]))
+            story.append(Spacer(1, 0.5 * cm))
+
+        if pulse_data.get("insights"):
+            _add_section_header(story, "Analytics Insights", styles)
+            for ins in pulse_data["insights"]:
+                story.append(Paragraph(ins, styles["body"]))
+            story.append(Spacer(1, 0.5 * cm))
+
+        # Dynamic charts from Pulse
+        if pulse_data.get("chart_data"):
+            from app.services.output.chart_service import render_dynamic_chart
+            for cname, cdata in pulse_data["chart_data"].items():
+                try:
+                    chart_bytes = render_dynamic_chart(cdata)
+                    if chart_bytes:
+                        _add_section_header(story, cdata.get("title", "Chart"), styles)
+                        img = Image(io.BytesIO(chart_bytes), width=14 * cm, height=7 * cm)
+                        story.append(img)
+                        story.append(Spacer(1, 0.5 * cm))
+                except Exception as exc:
+                    logger.warning(f"[PDFService] Fallback chart {cname} failed: {exc}")
+
+        # Dynamic tables from Pulse
+        if pulse_data.get("tables"):
+            for tname, trows in pulse_data["tables"].items():
+                if trows:
+                    _add_section_header(story, f"{humanize(tname)} ({len(trows)} records)", styles)
+                    story.append(_records_table(trows, styles))
+                    story.append(Spacer(1, 0.5 * cm))
+        return
+
+    # ── Legacy Executive Summary (when no Pulse data is present) ──────────────
     if records or metrics:
         _add_section_header(story, "Executive Summary", styles)
         summary_parts = []
@@ -338,7 +381,7 @@ def _generate_fallback(story: list, records: list[dict], metrics: Optional[dict]
         story.append(Paragraph("No data available for the requested query.", styles["body"]))
 
 
-def _execute_plan(story: list, plan: Any, records: list[dict], metrics: Optional[dict], styles: dict):
+def _execute_plan(story: list, plan: Any, records: list[dict], metrics: Optional[dict], styles: dict, pulse_data: Optional[dict] = None):
     """Executes the dynamically generated PDF plan."""
     if plan.executive_summary:
         _add_section_header(story, "Executive Summary", styles)
@@ -347,29 +390,47 @@ def _execute_plan(story: list, plan: Any, records: list[dict], metrics: Optional
 
     for section in plan.sections:
         _add_section_header(story, section.title, styles)
-        
+
         # Render text content if provided
-        if section.content:
+        if section.content and section.type != "table" and section.type != "chart":
             story.append(Paragraph(section.content, styles["body"]))
             story.append(Spacer(1, 0.3 * cm))
-            
+
         # Handle specific section types
         if section.type == "table":
-            if records:
-                story.append(_records_table(records, styles))
+            tbl_name = section.content
+            target_data = None
+            if pulse_data and pulse_data.get("tables") and tbl_name in pulse_data["tables"]:
+                target_data = pulse_data["tables"][tbl_name]
+            elif records:
+                target_data = records
+
+            if target_data:
+                story.append(_records_table(target_data, styles))
             else:
                 story.append(Paragraph("No data available for table.", styles["body"]))
             story.append(Spacer(1, 0.5 * cm))
-            
+
         elif section.type == "chart" or section.recommended_chart:
             chart_bytes = None
-            if section.recommended_chart == "cgpa_distribution" and records:
+            chart_key = section.recommended_chart or section.content
+
+            # Attempt dynamic chart from Pulse
+            if pulse_data and pulse_data.get("chart_data") and chart_key in pulse_data["chart_data"]:
+                try:
+                    from app.services.output.chart_service import render_dynamic_chart
+                    chart_bytes = render_dynamic_chart(pulse_data["chart_data"][chart_key])
+                except Exception as exc:
+                    logger.warning(f"[PDFService] Dynamic chart rendering failed: {exc}")
+
+            # Fallbacks to standard legacy charts
+            if not chart_bytes and chart_key == "cgpa_distribution" and records:
                 try:
                     from app.services.output.chart_service import cgpa_distribution_chart
                     chart_bytes = cgpa_distribution_chart(records)
                 except Exception:
                     pass
-            elif section.recommended_chart == "department_performance" and metrics:
+            elif not chart_bytes and chart_key == "department_performance" and metrics:
                 breakdown = metrics.get("departmentBreakdown") or metrics.get("department_breakdown")
                 if breakdown:
                     try:
@@ -377,14 +438,14 @@ def _execute_plan(story: list, plan: Any, records: list[dict], metrics: Optional
                         chart_bytes = department_breakdown_chart(breakdown)
                     except Exception:
                         pass
-            
+
             if chart_bytes:
                 img = Image(io.BytesIO(chart_bytes), width=14 * cm, height=8 * cm)
                 story.append(img)
                 story.append(Spacer(1, 0.5 * cm))
             else:
                 story.append(Paragraph("Chart data unavailable.", styles["body"]))
-                
+
         elif section.type == "statistics" and metrics:
             kv_rows = []
             stat_map = [
@@ -412,6 +473,7 @@ def generate_pdf(
     insight: Optional[str],
     user_query: str = "",
     file_stem: str = "student_report",
+    pulse_data: Optional[dict] = None,
 ) -> dict:
     """
     Generate a PDF report and return file metadata.
@@ -426,13 +488,13 @@ def generate_pdf(
     # ── Attempt LLM Planning ───────────────────────────────────────────────────
     from app.services.groq_service import GroqService
     groq_svc = GroqService()
-    
+
     # Build data summary for the LLM
     summary_parts = []
     summary_parts.append(f"Records Available: {len(records)}")
     if records:
         at_risk = len([r for r in records if float(r.get("cgpa", 10.0)) < 6.5])
-        summary_parts.append(f"At-Risk Students: {at_risk}")
+        summary_parts.append(f"At-Risk Students (Legacy Threshold): {at_risk}")
     if metrics:
         avg = metrics.get("averageCgpa") or metrics.get("average_cgpa")
         if avg:
@@ -440,19 +502,44 @@ def generate_pdf(
         breakdown = metrics.get("departmentBreakdown") or metrics.get("department_breakdown")
         if breakdown:
             summary_parts.append(f"Departments: {', '.join(breakdown.keys())}")
-    
+
+    if pulse_data:
+        summary_parts.append("\nPULSE ANALYTICS RESULTS:")
+        summary_parts.append(f"Summary: {pulse_data.get('summary')}")
+        if pulse_data.get("findings"):
+            summary_parts.append("Findings:")
+            for f in pulse_data["findings"]:
+                summary_parts.append(f"  - {f}")
+        if pulse_data.get("insights"):
+            summary_parts.append("Insights:")
+            for ins in pulse_data["insights"]:
+                summary_parts.append(f"  - {ins}")
+        if pulse_data.get("tables"):
+            summary_parts.append(f"Available Tables: {', '.join(pulse_data['tables'].keys())}")
+        if pulse_data.get("chart_data"):
+            summary_parts.append(f"Available Charts: {', '.join(pulse_data['chart_data'].keys())}")
+
     data_summary = "\n".join(summary_parts)
-    
+
     plan = groq_svc.generate_pdf_plan(user_query, data_summary)
-    
+
     # ── Title Page ────────────────────────────────────────────────────────────
     story.append(Spacer(1, 1.5 * cm))
     story.append(Paragraph("AgentCampus", styles["subtitle"]))
-    title_text = plan.report_title if plan else "Student Performance Report"
+
+    # Dynamically select title based on request or plan
+    title_text = "Student Analysis Report"
+    if plan and plan.report_title:
+        title_text = plan.report_title
+    elif pulse_data and pulse_data.get("analysis_type"):
+        title_text = f"{pulse_data['analysis_type'].replace('_', ' ').title()} Report"
+    elif "at risk" in user_query.lower():
+        title_text = "Academic Risk Assessment"
+
     story.append(Paragraph(title_text, styles["title"]))
     if plan and plan.report_type:
         story.append(Paragraph(plan.report_type, styles["subtitle"]))
-        
+
     story.append(Spacer(1, 0.4 * cm))
     story.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor(DARK_BLUE)))
     story.append(Spacer(1, 0.4 * cm))
@@ -466,14 +553,14 @@ def generate_pdf(
     if plan:
         logger.info("[PDFService] Executing Groq LLM Report Plan.")
         try:
-            _execute_plan(story, plan, records, metrics, styles)
+            _execute_plan(story, plan, records, metrics, styles, pulse_data=pulse_data)
         except Exception as exc:
             logger.error(f"[PDFService] Error executing PDF plan: {exc}. Falling back to deterministic.")
             plan = None
-            
+
     if not plan:
         logger.info("[PDFService] Using deterministic fallback generation.")
-        _generate_fallback(story, records, metrics, insight, styles)
+        _generate_fallback(story, records, metrics, insight, styles, pulse_data=pulse_data)
 
     # ── Footer note ───────────────────────────────────────────────────────────
     story.append(Spacer(1, 1.0 * cm))
@@ -499,12 +586,12 @@ def generate_pdf(
         title=title_text,
         author="AgentCampus Scribe",
     )
-    
+
     def add_page_number(canvas, doc):
         page_num = canvas.getPageNumber()
         text = f"Page {page_num}"
         canvas.drawRightString(20 * cm, 1 * cm, text)
-        
+
     doc.build(story, onFirstPage=add_page_number, onLaterPages=add_page_number)
     logger.info(f"[PDFService] Saved PDF report: {file_path}")
 

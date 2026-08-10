@@ -306,39 +306,85 @@ def _generate_recommendations(records: list[dict], metrics: Optional[dict]) -> l
     return recs
 
 
+def _add_multi_data_table_slides(prs: "Presentation", records: list[dict], title: str) -> int:
+    """Add one or more table slides, splitting content in chunks of 15."""
+    if not records:
+        return 0
+    chunk_size = 15
+    chunks = [records[i:i + chunk_size] for i in range(0, len(records), chunk_size)]
+    for idx, chunk in enumerate(chunks):
+        suffix = f" (Part {idx + 1})" if len(chunks) > 1 else ""
+        _add_data_table_slide(prs, chunk, title=title + suffix)
+    return len(chunks)
+
+
+def _add_split_text_slides(prs: "Presentation", title: str, points: list[str], insights: Optional[str] = None, color: RGBColor = _BLACK) -> int:
+    """Add one or more text slides, splitting key points in chunks of 5."""
+    if not points:
+        _add_generic_text_slide(prs, title, [], insights, color)
+        return 1
+
+    chunk_size = 5
+    chunks = [points[i:i + chunk_size] for i in range(0, len(points), chunk_size)]
+    for idx, chunk in enumerate(chunks):
+        suffix = f" (Part {idx + 1})" if len(chunks) > 1 else ""
+        ins = insights if idx == len(chunks) - 1 else None
+        _add_generic_text_slide(prs, title + suffix, chunk, ins, color)
+    return len(chunks)
+
+
 def _add_recommendations_slide(prs: "Presentation", recommendations: list[str]) -> None:
     """Fallback Slide: Recommendations."""
-    _add_generic_text_slide(prs, "Recommendations", [f"• {r}" for r in recommendations], color=_BLACK)
+    _add_split_text_slides(prs, "Recommendations", [f"• {r}" for r in recommendations], color=_BLACK)
 
 
 # ── LLM Plan Execution ─────────────────────────────────────────────────────────
 
-def _execute_plan(prs: "Presentation", plan: Any, records: list[dict], metrics: Optional[dict], user_query: str) -> int:
+def _execute_plan(prs: "Presentation", plan: Any, records: list[dict], metrics: Optional[dict], user_query: str, pulse_data: Optional[dict] = None) -> int:
     """Executes the dynamically generated PPT plan."""
     _add_title_slide(prs, user_query, title=plan.presentation_title, subtitle=plan.presentation_subtitle)
     slide_count = 1
-    
+
     for slide_plan in sorted(plan.slides, key=lambda s: s.priority):
         if slide_plan.slide_type == "title":
             continue  # Already handled above
-            
+
         elif slide_plan.slide_type == "table":
-            if records:
-                _add_data_table_slide(prs, records, title=slide_plan.slide_title)
-                slide_count += 1
+            tbl_name = slide_plan.slide_title.lower().replace(" ", "_")
+            target_data = None
+            if pulse_data and pulse_data.get("tables"):
+                for k, v in pulse_data["tables"].items():
+                    if k in tbl_name or tbl_name in k:
+                        target_data = v
+                        break
+            if not target_data and records:
+                target_data = records
+
+            if target_data:
+                slide_count += _add_multi_data_table_slides(prs, target_data, title=slide_plan.slide_title)
             else:
-                _add_generic_text_slide(prs, slide_plan.slide_title, slide_plan.key_points, slide_plan.insights)
-                slide_count += 1
-                
+                slide_count += _add_split_text_slides(prs, slide_plan.slide_title, slide_plan.key_points, slide_plan.insights)
+
         elif slide_plan.slide_type == "chart" or slide_plan.recommended_chart:
             chart_bytes = None
-            if slide_plan.recommended_chart == "cgpa_distribution" and records:
+            chart_key = slide_plan.recommended_chart or slide_plan.slide_title.lower().replace(" ", "_")
+
+            # Attempt dynamic chart from Pulse
+            if pulse_data and pulse_data.get("chart_data") and chart_key in pulse_data["chart_data"]:
+                try:
+                    from app.services.output.chart_service import render_dynamic_chart
+                    chart_bytes = render_dynamic_chart(pulse_data["chart_data"][chart_key])
+                except Exception as exc:
+                    logger.warning(f"[PPTService] Dynamic chart failed: {exc}")
+
+            # Legacy chart fallbacks
+            if not chart_bytes and (slide_plan.recommended_chart == "cgpa_distribution" or "distribution" in chart_key) and records:
                 try:
                     from app.services.output.chart_service import cgpa_distribution_chart
                     chart_bytes = cgpa_distribution_chart(records)
                 except Exception:
                     pass
-            elif slide_plan.recommended_chart == "department_performance" and metrics:
+            elif not chart_bytes and (slide_plan.recommended_chart == "department_performance" or "department" in chart_key) and metrics:
                 breakdown = metrics.get("departmentBreakdown") or metrics.get("department_breakdown")
                 if breakdown:
                     try:
@@ -346,14 +392,13 @@ def _execute_plan(prs: "Presentation", plan: Any, records: list[dict], metrics: 
                         chart_bytes = department_breakdown_chart(breakdown)
                     except Exception:
                         pass
-                        
+
             if chart_bytes:
                 _add_chart_slide(prs, chart_bytes, slide_plan.slide_title)
                 slide_count += 1
             else:
-                _add_generic_text_slide(prs, slide_plan.slide_title, slide_plan.key_points, slide_plan.insights)
-                slide_count += 1
-                
+                slide_count += _add_split_text_slides(prs, slide_plan.slide_title, slide_plan.key_points, slide_plan.insights)
+
         else:
             # Generic text slide for kpi_dashboard, insights, recommendation, conclusion
             color = _BLACK
@@ -361,11 +406,112 @@ def _execute_plan(prs: "Presentation", plan: Any, records: list[dict], metrics: 
                 color = _ORANGE
             elif slide_plan.slide_type == "kpi_dashboard":
                 color = _DARK_BLUE
-                
-            _add_generic_text_slide(prs, slide_plan.slide_title, slide_plan.key_points, slide_plan.insights, color=color)
-            slide_count += 1
-            
+
+            slide_count += _add_split_text_slides(prs, slide_plan.slide_title, slide_plan.key_points, slide_plan.insights, color=color)
+
     return slide_count
+
+
+def _generate_fallback_ppt(
+    prs: "Presentation",
+    records: list[dict],
+    metrics: Optional[dict],
+    insight: Optional[str],
+    user_query: str,
+    pulse_data: Optional[dict] = None
+) -> int:
+    """Deterministic fallback ppt generation."""
+    _add_title_slide(prs, user_query)
+    slide_count = 1
+
+    if pulse_data:
+        # Dynamic fallback based on Pulse results
+        if pulse_data.get("summary"):
+            _add_generic_text_slide(prs, "Executive Summary", [pulse_data["summary"]])
+            slide_count += 1
+
+        if pulse_data.get("findings"):
+            slide_count += _add_split_text_slides(prs, "Key Findings", pulse_data["findings"])
+
+        if pulse_data.get("insights"):
+            slide_count += _add_split_text_slides(prs, "Analytics Insights", pulse_data["insights"])
+
+        # Render charts as slides
+        if pulse_data.get("chart_data"):
+            from app.services.output.chart_service import render_dynamic_chart
+            for cname, cdata in pulse_data["chart_data"].items():
+                try:
+                    chart_bytes = render_dynamic_chart(cdata)
+                    if chart_bytes:
+                        _add_chart_slide(prs, chart_bytes, cdata.get("title", "Chart"))
+                        slide_count += 1
+                except Exception as exc:
+                    logger.warning(f"[PPTService] Fallback chart failed: {exc}")
+
+        # Render tables as slides
+        if pulse_data.get("tables"):
+            for tname, trows in pulse_data["tables"].items():
+                if trows:
+                    slide_count += _add_multi_data_table_slides(prs, trows, humanize(tname))
+        return slide_count
+
+    # Legacy fallback behavior when pulse_data is not present
+    if records or metrics:
+        _add_summary_slide(prs, records, metrics)
+        slide_count += 1
+
+    if metrics:
+        _add_stats_slide(prs, metrics)
+        slide_count += 1
+
+        breakdown = metrics.get("departmentBreakdown") or metrics.get("department_breakdown")
+        if breakdown and isinstance(breakdown, dict) and len(breakdown) > 0:
+            _add_department_slide(prs, breakdown)
+            slide_count += 1
+
+    if insight:
+        _add_insight_slide(prs, insight)
+        slide_count += 1
+
+    if records:
+        try:
+            from app.services.output.chart_service import cgpa_distribution_chart
+            chart_bytes = cgpa_distribution_chart(records)
+            if chart_bytes:
+                _add_chart_slide(prs, chart_bytes, "CGPA Distribution")
+                slide_count += 1
+        except Exception as exc:
+            logger.warning(f"[PPTService] Could not embed chart: {exc}")
+
+    if metrics:
+        breakdown = metrics.get("departmentBreakdown") or metrics.get("department_breakdown")
+        if breakdown:
+            try:
+                from app.services.output.chart_service import department_breakdown_chart
+                chart_bytes = department_breakdown_chart(breakdown)
+                if chart_bytes:
+                    _add_chart_slide(prs, chart_bytes, "Department Performance")
+                    slide_count += 1
+            except Exception as exc:
+                logger.warning(f"[PPTService] Could not embed dept chart: {exc}")
+
+    if records:
+        slide_count += _add_multi_data_table_slides(prs, records, "Student Data")
+
+        at_risk = [
+            r for r in records
+            if (r.get("status") == "Probation" or float(r.get("cgpa", 10.0)) < 6.5)
+        ]
+        if at_risk:
+            _add_at_risk_slide(prs, at_risk)
+            slide_count += 1
+
+    recommendations = _generate_recommendations(records, metrics)
+    _add_recommendations_slide(prs, recommendations)
+    slide_count += 1
+
+    return slide_count
+
 
 # ── Public API ─────────────────────────────────────────────────────────────────
 
@@ -375,6 +521,7 @@ def generate_ppt(
     insight: Optional[str],
     user_query: str = "",
     file_stem: str = "student_report",
+    pulse_data: Optional[dict] = None,
 ) -> dict:
     """
     Generate a PowerPoint presentation and return file metadata.
@@ -387,19 +534,19 @@ def generate_ppt(
     # Widescreen layout (13.33 x 7.5 inches)
     prs.slide_width = Inches(13.33)
     prs.slide_height = Inches(7.5)
-    
+
     slide_count = 0
-    
+
     # ── Attempt LLM Planning ───────────────────────────────────────────────────
     from app.services.groq_service import GroqService
     groq_svc = GroqService()
-    
+
     # Build data summary for the LLM
     summary_parts = []
     summary_parts.append(f"Records Available: {len(records)}")
     if records:
         at_risk = len([r for r in records if float(r.get("cgpa", 10.0)) < 6.5])
-        summary_parts.append(f"At-Risk Students: {at_risk}")
+        summary_parts.append(f"At-Risk Students (Legacy Threshold): {at_risk}")
     if metrics:
         avg = metrics.get("averageCgpa") or metrics.get("average_cgpa")
         if avg:
@@ -407,79 +554,39 @@ def generate_ppt(
         breakdown = metrics.get("departmentBreakdown") or metrics.get("department_breakdown")
         if breakdown:
             summary_parts.append(f"Departments: {', '.join(breakdown.keys())}")
-    
+
+    if pulse_data:
+        summary_parts.append("\nPULSE ANALYTICS RESULTS:")
+        summary_parts.append(f"Summary: {pulse_data.get('summary')}")
+        if pulse_data.get("findings"):
+            summary_parts.append("Findings:")
+            for f in pulse_data["findings"]:
+                summary_parts.append(f"  - {f}")
+        if pulse_data.get("insights"):
+            summary_parts.append("Insights:")
+            for ins in pulse_data["insights"]:
+                summary_parts.append(f"  - {ins}")
+        if pulse_data.get("tables"):
+            summary_parts.append(f"Available Tables: {', '.join(pulse_data['tables'].keys())}")
+        if pulse_data.get("chart_data"):
+            summary_parts.append(f"Available Charts: {', '.join(pulse_data['chart_data'].keys())}")
+
     data_summary = "\n".join(summary_parts)
-    
+
     plan = groq_svc.generate_ppt_plan(user_query, data_summary)
-    
+
     if plan:
         logger.info("[PPTService] Executing Groq LLM Presentation Plan.")
         try:
-            slide_count = _execute_plan(prs, plan, records, metrics, user_query)
+            slide_count = _execute_plan(prs, plan, records, metrics, user_query, pulse_data=pulse_data)
         except Exception as exc:
             logger.error(f"[PPTService] Error executing PPT plan: {exc}. Falling back to deterministic.")
             plan = None  # Force fallback
-            
+
     # ── Fallback ──────────────────────────────────────────────────────────────
     if not plan:
         logger.info("[PPTService] Using deterministic fallback generation.")
-        _add_title_slide(prs, user_query)
-        slide_count += 1
-        
-        if records or metrics:
-            _add_summary_slide(prs, records, metrics)
-            slide_count += 1
-
-        if metrics:
-            _add_stats_slide(prs, metrics)
-            slide_count += 1
-
-            breakdown = metrics.get("departmentBreakdown") or metrics.get("department_breakdown")
-            if breakdown and isinstance(breakdown, dict) and len(breakdown) > 0:
-                _add_department_slide(prs, breakdown)
-                slide_count += 1
-
-        if insight:
-            _add_insight_slide(prs, insight)
-            slide_count += 1
-
-        if records:
-            try:
-                from app.services.output.chart_service import cgpa_distribution_chart
-                chart_bytes = cgpa_distribution_chart(records)
-                if chart_bytes:
-                    _add_chart_slide(prs, chart_bytes, "CGPA Distribution")
-                    slide_count += 1
-            except Exception as exc:
-                logger.warning(f"[PPTService] Could not embed chart: {exc}")
-
-        if metrics:
-            breakdown = metrics.get("departmentBreakdown") or metrics.get("department_breakdown")
-            if breakdown:
-                try:
-                    from app.services.output.chart_service import department_breakdown_chart
-                    chart_bytes = department_breakdown_chart(breakdown)
-                    if chart_bytes:
-                        _add_chart_slide(prs, chart_bytes, "Department Performance")
-                        slide_count += 1
-                except Exception as exc:
-                    logger.warning(f"[PPTService] Could not embed dept chart: {exc}")
-
-        if records:
-            _add_data_table_slide(prs, records)
-            slide_count += 1
-
-            at_risk = [
-                r for r in records
-                if (r.get("status") == "Probation" or float(r.get("cgpa", 10.0)) < 6.5)
-            ]
-            if at_risk:
-                _add_at_risk_slide(prs, at_risk)
-                slide_count += 1
-
-        recommendations = _generate_recommendations(records, metrics)
-        _add_recommendations_slide(prs, recommendations)
-        slide_count += 1
+        slide_count = _generate_fallback_ppt(prs, records, metrics, insight, user_query, pulse_data=pulse_data)
 
     # ── Save ──────────────────────────────────────────────────────────────────
     out_dir = _ensure_output_dir()

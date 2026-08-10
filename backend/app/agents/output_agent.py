@@ -53,6 +53,10 @@ def _detect_format(query: str) -> str:
     Falls back to "text" if no format keyword is found.
     """
     q = query.lower()
+    # Check text first to prevent matching "report" to pdf when it says "text report"
+    text_kws = ["plain text", "written answer", "text report", "write an answer", "directly as text", "in text", "as text"]
+    if any(kw in q for kw in text_kws):
+        return "text"
     for fmt, keywords in _FORMAT_KEYWORDS.items():
         if any(kw in q for kw in keywords):
             return fmt
@@ -86,6 +90,14 @@ def _extract_insight(input_data: dict) -> Optional[str]:
     if not isinstance(analytics_result, dict):
         return None
     return analytics_result.get("insight")
+
+
+def _extract_pulse_data(input_data: dict) -> Optional[dict]:
+    """Safely extract the full Pulse analytics dict if available."""
+    analytics_result = input_data.get("analytics")
+    if isinstance(analytics_result, dict) and ("summary" in analytics_result or "findings" in analytics_result):
+        return analytics_result
+    return None
 
 
 def _build_summary(
@@ -196,6 +208,7 @@ class OutputAgent(BaseAgent):
         sql = _extract_sql(input_data)
         metrics_dict = _extract_metrics(input_data)
         insight = _extract_insight(input_data)
+        pulse_data = _extract_pulse_data(input_data)
         user_query = str(input_data.get("user_query", ""))
 
         # ── Detect requested output format ────────────────────────────────────
@@ -212,14 +225,15 @@ class OutputAgent(BaseAgent):
 
         if output_format == "text":
             logger.info(f"[Scribe] Generating file: (None, text output)")
-            text_content = self._generate_text(records, metrics_dict, insight, user_query)
+            text_content = self._generate_text(records, metrics_dict, insight, user_query, pulse_data)
             logger.info(f"[Scribe] File generated successfully: (Text content returned)")
 
         elif output_format == "excel":
             try:
                 logger.info(f"[Scribe] Generating file: .xlsx")
                 from app.services.output.excel_service import generate_excel
-                file_info = generate_excel(records, metrics_dict, insight)
+                # Keep backward compatibility, pass pulse_data as kwarg
+                file_info = generate_excel(records, metrics_dict, insight, pulse_data=pulse_data)
                 output_file = file_info.get("file_path")
                 logger.info(f"[Scribe] File generated successfully: {output_file}")
             except Exception as exc:
@@ -227,35 +241,35 @@ class OutputAgent(BaseAgent):
                 logger.error(f"[Scribe] {format_error}")
                 # Graceful degradation — fall back to text
                 output_format = "text"
-                text_content = self._generate_text(records, metrics_dict, insight, user_query)
+                text_content = self._generate_text(records, metrics_dict, insight, user_query, pulse_data)
                 text_content += f"\n\n[Note: {format_error}]"
 
         elif output_format == "pdf":
             try:
                 logger.info(f"[Scribe] Generating file: .pdf")
                 from app.services.output.pdf_service import generate_pdf
-                file_info = generate_pdf(records, metrics_dict, insight, user_query)
+                file_info = generate_pdf(records, metrics_dict, insight, user_query, pulse_data=pulse_data)
                 output_file = file_info.get("file_path")
                 logger.info(f"[Scribe] File generated successfully: {output_file}")
             except Exception as exc:
                 format_error = f"PDF generation failed: {str(exc)}"
                 logger.error(f"[Scribe] {format_error}")
                 output_format = "text"
-                text_content = self._generate_text(records, metrics_dict, insight, user_query)
+                text_content = self._generate_text(records, metrics_dict, insight, user_query, pulse_data)
                 text_content += f"\n\n[Note: {format_error}]"
 
         elif output_format == "pptx":
             try:
                 logger.info(f"[Scribe] Generating file: .pptx")
                 from app.services.output.ppt_service import generate_ppt
-                file_info = generate_ppt(records, metrics_dict, insight, user_query)
+                file_info = generate_ppt(records, metrics_dict, insight, user_query, pulse_data=pulse_data)
                 output_file = file_info.get("file_path")
                 logger.info(f"[Scribe] File generated successfully: {output_file}")
             except Exception as exc:
                 format_error = f"PPT generation failed: {str(exc)}"
                 logger.error(f"[Scribe] {format_error}")
                 output_format = "text"
-                text_content = self._generate_text(records, metrics_dict, insight, user_query)
+                text_content = self._generate_text(records, metrics_dict, insight, user_query, pulse_data)
                 text_content += f"\n\n[Note: {format_error}]"
 
         else:
@@ -307,11 +321,12 @@ class OutputAgent(BaseAgent):
         metrics_dict: Optional[dict],
         insight: Optional[str],
         user_query: str,
+        pulse_data: Optional[dict] = None,
     ) -> str:
         """Generate structured text output, with safe fallback."""
         try:
             from app.services.output.text_service import generate_text
-            return generate_text(records, metrics_dict, insight, user_query)
+            return generate_text(records, metrics_dict, insight, user_query, pulse_data=pulse_data)
         except Exception as exc:
             logger.error(f"[Scribe] TextService error: {exc}")
             # Ultra-minimal fallback
