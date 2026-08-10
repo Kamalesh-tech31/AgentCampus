@@ -1,0 +1,6 @@
+{
+  "name": "AgentCampus",
+  "description": "Multi-agent orchestration UI in the style of Google Antigravity's agent-first interface, featuring Input, Mother, DB, Analytics, and Output agents.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
