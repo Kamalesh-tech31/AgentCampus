@@ -4,3 +4,4 @@ crewai
 pydantic
 python-dotenv
 groq
+supabase

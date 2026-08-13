@@ -1,5 +1,7 @@
 from typing import List
 from app.contracts.students import StudentRecord, StudentDepartment
+from app.db.student_queries import get_all_students
+from app.db.student_mutations import delete_all_students, bulk_insert_students
 
 INITIAL_STUDENT_DATA: List[dict] = [
     {
@@ -252,17 +254,18 @@ def _build_initial_students() -> List[StudentRecord]:
 
 
 class StudentService:
-    """In-memory Student Service storing student records."""
-
-    def __init__(self):
-        self._students: List[StudentRecord] = _build_initial_students()
+    """Supabase-backed Student Service storing student records."""
 
     def get_students(self) -> List[StudentRecord]:
-        return self._students
+        raw_students = get_all_students()
+        return [StudentRecord.model_validate(s) for s in raw_students]
 
     def reset_db(self) -> List[StudentRecord]:
-        self._students = _build_initial_students()
-        return self._students
+        delete_all_students()
+        initial_students = _build_initial_students()
+        records_to_insert = [s.model_dump(by_alias=True) for s in initial_students]
+        bulk_insert_students(records_to_insert)
+        return self.get_students()
 
 
 student_service = StudentService()

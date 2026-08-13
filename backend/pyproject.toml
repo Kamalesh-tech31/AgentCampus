@@ -27,3 +27,9 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["app"]
+markers = [
+    "critical: High-priority critical test case covering core fixes and smoke tests",
+    "batch1: Batch 1 of non-critical test cases (Sections 0, A, B, C1-C5)",
+    "batch2: Batch 2 of non-critical test cases (Sections C6-C15, D, E2-E6)",
+    "batch3: Batch 3 of non-critical test cases (Sections E7-E15, F, G)"
+]

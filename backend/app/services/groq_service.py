@@ -4,8 +4,8 @@ from typing import Optional, List
 from dotenv import load_dotenv
 from pydantic import BaseModel
 from app.contracts.orchestration import DynamicPlanRequestType
+from app.services.groq_client import call_groq_completion
 
-# Ensure .env is loaded if GroqService is initialized independently
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -27,7 +27,7 @@ class GroqPlanPayload(BaseModel):
 
 
 class GroqService:
-    """Service abstraction for LLM planning via Groq API."""
+    """Service abstraction for LLM planning via Groq API with automatic key fallback."""
 
     def __init__(
         self,
@@ -36,28 +36,12 @@ class GroqService:
     ):
         self.api_key = api_key or os.getenv("GROQ_API_KEY")
         self.model = model or os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
-        self.client = None
-
-        if self.api_key:
-            try:
-                import groq
-
-                self.client = groq.Groq(api_key=self.api_key)
-                logger.info(f"[Groq] API configured (model={self.model})")
-            except Exception as exc:
-                logger.error(f"[Groq] Failed to initialize Groq client: {exc}")
-        else:
-            logger.info("[Groq] API key not found in environment; returning None for fallback.")
 
     def generate_plan(self, prompt: str) -> Optional[GroqPlanPayload]:
         """
         Sends planning prompt to Groq LLM and returns validated GroqPlanPayload.
-        Returns None if Groq is unconfigured, disabled, or returns invalid plan.
+        Automatically retries with GROQ_API_KEY_2 if rate limit occurs.
         """
-        if not self.client:
-            logger.info("[Groq] API unavailable or unconfigured; returning None for fallback.")
-            return None
-
         logger.info(f"[Groq] Generating workflow plan for prompt: '{prompt[:40]}...'")
 
         system_prompt = (
@@ -90,17 +74,16 @@ class GroqService:
         )
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
+            raw_content = call_groq_completion(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt},
                 ],
+                model=self.model,
                 response_format={"type": "json_object"},
                 temperature=0.1,
             )
 
-            raw_content = response.choices[0].message.content
             if not raw_content:
                 logger.warning("[Groq] Empty response received from Groq LLM.")
                 return None
