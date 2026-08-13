@@ -23,7 +23,7 @@ import re
 from typing import Optional
 
 from app.agents.base import BaseAgent
-from app.agents.file_parser import is_supported_file, parse_file
+from app.agents.file_parser import is_supported_file, parse_file, SUPPORTED_EXTENSIONS
 from app.mother.types import AgentTask, AgentResult
 from app.services.groq_service import GroqService
 
@@ -672,6 +672,49 @@ def _derive_min_cgpa(cgpa_filters: list[dict]) -> Optional[float]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+def extract_file_path_from_query(query: str) -> tuple[Optional[str], str]:
+    """
+    Looks for a supported file path in the query string.
+    Returns (extracted_file_path, remaining_query_text).
+    Supports absolute/relative paths, quotes, and space-containing paths.
+    """
+    import os
+
+    # Quoted path pattern (single or double quotes)
+    ext_pattern = r"\.(?:xlsx|pdf|png|jpg|jpeg)\b"
+    quoted_match = re.search(r'["\']([^"\']+' + ext_pattern + r')["\']', query, re.IGNORECASE)
+    if quoted_match:
+        path = quoted_match.group(1).strip()
+        if os.path.exists(path):
+            remaining = query.replace(quoted_match.group(0), "").strip()
+            return path, remaining
+
+    # Unquoted path pattern
+    words = query.split()
+    for i, w in enumerate(words):
+        clean_w = w.strip().rstrip('.,;!?')
+        if any(clean_w.lower().endswith(ext) for ext in SUPPORTED_EXTENSIONS):
+            if os.path.exists(clean_w):
+                words_copy = list(words)
+                words_copy.pop(i)
+                remaining = " ".join(words_copy)
+                return clean_w, remaining
+            
+            # Check backwards for spaces in path (e.g., C:\My Documents\data.xlsx)
+            for j in range(i):
+                candidate = " ".join(words[j:i+1]).strip().rstrip('.,;!?')
+                if os.path.exists(candidate):
+                    words_copy = list(words)
+                    del words_copy[j:i+1]
+                    remaining = " ".join(words_copy)
+                    return candidate, remaining
+
+
+
+    return None, query
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main InputAgent
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -689,29 +732,34 @@ class InputAgent(BaseAgent):
     name = "input"
 
     def execute(self, task: AgentTask) -> AgentResult:  # noqa: C901
-        raw_input: str = (
-            task.input_data.get("user_query", "")
-            or task.input_data.get("file_path", "")
-        )
+        raw_input: str = task.input_data.get("user_query", "")
+        explicit_file_path: str = task.input_data.get("file_path", "")
 
         logger.info("InputAgent started — task_id=%s", task.task_id)
 
         # ── Reject empty / whitespace-only input ──
         if not raw_input or not raw_input.strip():
-            logger.warning("InputAgent received empty input — task_id=%s", task.task_id)
-            return AgentResult(
-                task_id=task.task_id,
-                agent=self.name,
-                status="failed",
-                error="Empty or whitespace-only query received.",
-            )
+            if not explicit_file_path:
+                logger.warning("InputAgent received empty input — task_id=%s", task.task_id)
+                return AgentResult(
+                    task_id=task.task_id,
+                    agent=self.name,
+                    status="failed",
+                    error="Empty or whitespace-only query received.",
+                )
 
-        # ── Detect if input is a path to a supported file ──
-        file_path = raw_input.strip().strip('"').strip("'")
+        # ── Detect or retrieve file path ──
         parsed_records: Optional[list] = None
         source_type: str = "text"
+        file_path = None
+        remaining_query = raw_input
 
-        if is_supported_file(file_path):
+        if explicit_file_path:
+            file_path = explicit_file_path
+        else:
+            file_path, remaining_query = extract_file_path_from_query(raw_input)
+
+        if file_path:
             logger.info("InputAgent detected file input: '%s'", file_path)
             source_type = "file"
 
@@ -731,19 +779,23 @@ class InputAgent(BaseAgent):
                 )
 
             if parsed["type"] == "table":
-                # File contained a student table → attach records, use empty NL pipeline
+                # File contained a student table → attach records, use remaining query text
                 parsed_records = parsed["records"]
-                raw_input = "show all parsed records"  # placeholder NL for pipeline
+                raw_input = remaining_query if remaining_query.strip() else "show all parsed records"
                 logger.info(
-                    "File parsed as table — %d records attached to structured_intent",
+                    "File parsed as table — %d records attached, remaining query: '%s'",
                     len(parsed_records),
+                    raw_input,
                 )
             else:
                 # File contained a NL query → use it as the actual query
-                raw_input = parsed["query"]
+                file_query = parsed["query"]
+                raw_input = f"{file_query} {remaining_query}".strip()
                 logger.info(
                     "File parsed as NL query: '%s'", raw_input[:120]
                 )
+        else:
+            raw_input = remaining_query
 
         # ── NL pipeline (runs for both text queries and file-derived queries) ──
         query = raw_input

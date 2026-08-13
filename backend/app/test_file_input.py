@@ -478,6 +478,25 @@ class TestInputAgentWithFiles:
         assert si["parsed_records"] is not None
         assert si["parsed_records"][0]["name"] == "ImgStudent"
 
+    def test_combined_path_and_query(self):
+        path = _make_xlsx()
+        try:
+            agent = InputAgent()
+            result = agent.execute(_make_task(user_query=f"{path} show CS students with CGPA above 8.5"))
+            assert result.status == "completed"
+            si = result.result["structured_intent"]
+            assert si["source_type"] == "file"
+            assert si["parsed_records"] is not None
+            assert len(si["parsed_records"]) == len(SAMPLE_STUDENTS)
+            assert si["department"] == "Computer Science"
+            cgpa_f = [f for f in si["filters"] if f["field"] == "cgpa"]
+            assert len(cgpa_f) == 1
+            assert cgpa_f[0]["operator"] == ">"
+            assert cgpa_f[0]["value"] == 8.5
+        finally:
+            os.unlink(path)
+
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DBAgent integration with file-parsed records
