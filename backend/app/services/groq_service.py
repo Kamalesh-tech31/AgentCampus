@@ -130,7 +130,7 @@ class GroqService:
             logger.error(f"[Groq] API error or validation failure: {exc}")
             return None
 
-    def extract_data_from_image(self, image_path: str) -> Optional[dict]:
+    def extract_data_from_image(self, image_path: str, query: Optional[str] = None) -> Optional[dict]:
         """
         Sends an image to Groq's Vision LLM to extract either a natural language query
         or structured student records.
@@ -142,7 +142,7 @@ class GroqService:
         import base64
         import mimetypes
 
-        logger.info(f"[Groq] Extracting data from image: {image_path}")
+        logger.info(f"[Groq] Extracting data from image: {image_path} (filter query: {query})")
 
         try:
             # 1. Base64 encode the image
@@ -151,6 +151,22 @@ class GroqService:
 
             mime_type, _ = mimetypes.guess_type(image_path)
             mime_type = mime_type or "image/jpeg"
+
+            filter_instruction = ""
+            if query and query.strip():
+                filter_instruction = (
+                    f"\nCRITICAL FILTERING RULE:\n"
+                    f"The user is only interested in records matching this filter: '{query.strip()}'.\n"
+                    f"Apply these filters (e.g. specific department, CGPA criteria, or top limit) to the "
+                    f"table in the image, and ONLY extract and return the matching rows in the 'records' array.\n"
+                    f"Do not return any rows that fail the filter criteria. This is crucial to avoid token truncation."
+                )
+            else:
+                filter_instruction = (
+                    "\nLIMIT RULE:\n"
+                    "If the image contains a large table, extract only the first 10-15 rows in the 'records' array "
+                    "to avoid hitting the API output token limits."
+                )
 
             # 2. Call Groq vision API
             vision_prompt = (
@@ -175,16 +191,33 @@ class GroqService:
                 "    }\n"
                 "  ]\n"
                 "}\n\n"
-                "Return raw valid JSON only. Do not wrap in markdown code blocks."
+                "Instructions:\n"
+                "1. If type is 'table', omit any of the optional keys (roll_number, semester, email, backlogs, project_title, attendance, status) from the records if they are not present in the image. Only output name, department, cgpa, and other fields that actually have values to keep the JSON concise."
+                f"{filter_instruction}\n"
+                "2. Return raw valid JSON only. Do not wrap in markdown code blocks.\n"
+                "3. Do NOT explain your reasoning. Do NOT use <think> blocks. Output JSON immediately."
             )
+
+            # Prepend /no_think to disable Qwen's chain-of-thought thinking mode
+            # so all output tokens go to JSON, not reasoning.
+            no_think_prompt = "/no_think\n\n" + vision_prompt
 
             response = self.client.chat.completions.create(
                 model="qwen/qwen3.6-27b",
                 messages=[
                     {
+                        "role": "system",
+                        "content": (
+                            "You are a JSON-only data extraction API. "
+                            "You MUST output ONLY a valid JSON object. "
+                            "You MUST NOT use <think> tags, reasoning blocks, or any explanatory text. "
+                            "Your entire response must be a single parseable JSON object."
+                        ),
+                    },
+                    {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": vision_prompt},
+                            {"type": "text", "text": no_think_prompt},
                             {
                                 "type": "image_url",
                                 "image_url": {
@@ -194,6 +227,7 @@ class GroqService:
                         ],
                     }
                 ],
+                max_tokens=16384,
                 temperature=0.1,
             )
 
@@ -202,12 +236,21 @@ class GroqService:
                 logger.warning("[Groq Vision] Empty response from vision model.")
                 return None
 
-            # Clean and extract JSON (handles optional markdown formatting wrap)
+            # Clean and extract JSON
             import re
-            clean_json = raw_content.strip()
+            
+            # 1. Remove <think>...</think> block if present
+            clean_json = re.sub(r"<think>[\s\S]*?</think>", "", raw_content).strip()
+
+            # 2. Extract JSON block between ```json and ``` if present
             match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", clean_json, re.IGNORECASE)
             if match:
                 clean_json = match.group(1).strip()
+            else:
+                # 3. Fallback: Find outermost curly braces { ... }
+                match_json = re.search(r"(\{[\s\S]*\})", clean_json)
+                if match_json:
+                    clean_json = match_json.group(1).strip()
 
             import json
             data = json.loads(clean_json)

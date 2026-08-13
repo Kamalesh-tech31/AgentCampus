@@ -309,7 +309,7 @@ class TestParseImageFile:
         """Test that parse_image_file calls groq_service.extract_data_from_image."""
         class MockGroq:
             called = False
-            def extract_data_from_image(self, path):
+            def extract_data_from_image(self, path, query=None):
                 MockGroq.called = True
                 return {
                     "type": "table",
@@ -334,7 +334,7 @@ class TestParseImageFile:
     def test_groq_query_response(self, tmp_path):
         """Test that parse_image_file handles query-type response."""
         class MockGroqQuery:
-            def extract_data_from_image(self, path):
+            def extract_data_from_image(self, path, query=None):
                 return {"type": "query", "query": "Show top 5 CS students"}
 
         img_path = str(tmp_path / "test.jpg")
@@ -347,7 +347,7 @@ class TestParseImageFile:
 
     def test_groq_failure_returns_none(self, tmp_path):
         class MockGroqFail:
-            def extract_data_from_image(self, path):
+            def extract_data_from_image(self, path, query=None):
                 return None
 
         img_path = str(tmp_path / "test.png")
@@ -464,7 +464,7 @@ class TestInputAgentWithFiles:
             self.api_key = "test"
             self.model = "test-model"
 
-        def mock_extract(self, path):
+        def mock_extract(self, path, query=None):
             return mock_result
 
         monkeypatch.setattr(gs_module.GroqService, "__init__", mock_init)

@@ -768,7 +768,7 @@ class InputAgent(BaseAgent):
             ext = os.path.splitext(file_path)[1].lower()
             groq_svc = GroqService() if ext in (".png", ".jpg", ".jpeg") else None
 
-            parsed = parse_file(file_path, groq_service=groq_svc)
+            parsed = parse_file(file_path, groq_service=groq_svc, query=remaining_query)
 
             if parsed is None:
                 return AgentResult(

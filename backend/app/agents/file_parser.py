@@ -194,7 +194,7 @@ def is_supported_file(value: str) -> bool:
     return ext in SUPPORTED_EXTENSIONS and os.path.exists(stripped)
 
 
-def parse_file(file_path: str, groq_service=None) -> Optional[dict]:
+def parse_file(file_path: str, groq_service=None, query: Optional[str] = None) -> Optional[dict]:
     """
     Dispatch to the appropriate parser based on file extension.
     Returns {"type": "table", "records": [...]} or {"type": "query", "query": "..."}.
@@ -208,7 +208,7 @@ def parse_file(file_path: str, groq_service=None) -> Optional[dict]:
     elif ext == ".pdf":
         return parse_pdf_file(file_path)
     elif ext in (".png", ".jpg", ".jpeg"):
-        return parse_image_file(file_path, groq_service)
+        return parse_image_file(file_path, groq_service, query)
     else:
         logger.warning("Unsupported file extension '%s' in: %s", ext, file_path)
         return None
@@ -358,7 +358,7 @@ def parse_pdf_file(file_path: str) -> Optional[dict]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def parse_image_file(file_path: str, groq_service=None) -> Optional[dict]:
+def parse_image_file(file_path: str, groq_service=None, query: Optional[str] = None) -> Optional[dict]:
     """
     Parse an image file (.png / .jpg / .jpeg) using Groq Vision API.
     Returns {"type": "table", "records": [...]} or {"type": "query", "query": "..."}.
@@ -370,7 +370,7 @@ def parse_image_file(file_path: str, groq_service=None) -> Optional[dict]:
         )
         return None
 
-    result = groq_service.extract_data_from_image(file_path)
+    result = groq_service.extract_data_from_image(file_path, query)
     if not result:
         return None
 
