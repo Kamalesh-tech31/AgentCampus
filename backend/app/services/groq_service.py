@@ -194,7 +194,6 @@ class GroqService:
                         ],
                     }
                 ],
-                response_format={"type": "json_object"},
                 temperature=0.1,
             )
 
@@ -203,8 +202,15 @@ class GroqService:
                 logger.warning("[Groq Vision] Empty response from vision model.")
                 return None
 
+            # Clean and extract JSON (handles optional markdown formatting wrap)
+            import re
+            clean_json = raw_content.strip()
+            match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", clean_json, re.IGNORECASE)
+            if match:
+                clean_json = match.group(1).strip()
+
             import json
-            data = json.loads(raw_content)
+            data = json.loads(clean_json)
             logger.info(f"[Groq Vision] Successfully parsed image of type: {data.get('type')}")
             return data
 
