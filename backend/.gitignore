@@ -24,3 +24,6 @@ htmlcov/
 # IDE
 .vscode/
 .idea/
+
+# Interactive test script
+test_interactive.py
