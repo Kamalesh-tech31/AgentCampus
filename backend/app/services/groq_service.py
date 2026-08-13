@@ -134,6 +134,12 @@ class GroqService:
         """
         Sends an image to Groq's Vision LLM to extract either a natural language query
         or structured student records.
+
+        Uses two strategies:
+        1. Parse JSON from the response (after stripping think block).
+        2. If JSON is missing/truncated, parse matched records from the <think> block
+           directly — the model reliably outputs match lines even when it runs out of
+           tokens before producing JSON.
         """
         if not self.client:
             logger.info("[Groq] API unavailable or unconfigured for image extraction.")
@@ -141,94 +147,55 @@ class GroqService:
 
         import base64
         import mimetypes
+        import re
+        import json as _json
 
         logger.info(f"[Groq] Extracting data from image: {image_path} (filter query: {query})")
 
         try:
-            # 1. Base64 encode the image
             with open(image_path, "rb") as image_file:
                 base64_image = base64.b64encode(image_file.read()).decode("utf-8")
 
             mime_type, _ = mimetypes.guess_type(image_path)
             mime_type = mime_type or "image/jpeg"
 
-            filter_instruction = ""
             if query and query.strip():
                 filter_instruction = (
-                    f"\nCRITICAL FILTERING RULE:\n"
-                    f"The user is only interested in records matching this filter: '{query.strip()}'.\n"
-                    f"Apply these filters (e.g. specific department, CGPA criteria, or top limit) to the "
-                    f"table in the image, and ONLY extract and return the matching rows in the 'records' array.\n"
-                    f"Do not return any rows that fail the filter criteria. This is crucial to avoid token truncation."
+                    f"FILTER: Only return records matching '{query.strip()}'. Skip all other rows."
                 )
             else:
-                filter_instruction = (
-                    "\nLIMIT RULE:\n"
-                    "If the image contains a large table, extract only the first 10-15 rows in the 'records' array "
-                    "to avoid hitting the API output token limits."
-                )
+                filter_instruction = "Return at most 10 records."
 
-            # 2. Call Groq vision API
             vision_prompt = (
-                "Analyze this image. It contains either a natural language query (text) about students, "
-                "or a table/list of student records.\n\n"
-                "Extract the content and return ONLY a JSON object matching this schema:\n"
-                "{\n"
-                '  "type": "table" | "query",\n'
-                '  "query": "the extracted text query if type is query, else null",\n'
-                '  "records": [\n'
-                "    {\n"
-                '      "name": "Student Full Name",\n'
-                '      "department": "Computer Science" | "Electronics" | "Mechanical" | "Civil" | "Data Science" | "AI & ML",\n'
-                '      "cgpa": float (between 0.0 and 10.0),\n'
-                '      "attendance": float (between 0.0 and 100.0),\n'
-                '      "status": "Active" | "Probation" | "Graduated",\n'
-                '      "roll_number": "Roll number string if present, else empty/null",\n'
-                '      "semester": int (between 1 and 8 if present, else null),\n'
-                '      "email": "Email string if present, else null",\n'
-                '      "backlogs": int (>=0 if present, else null),\n'
-                '      "project_title": "Project title string if present, else null"\n'
-                "    }\n"
-                "  ]\n"
-                "}\n\n"
-                "Instructions:\n"
-                "1. If type is 'table', omit any of the optional keys (roll_number, semester, email, backlogs, project_title, attendance, status) from the records if they are not present in the image. Only output name, department, cgpa, and other fields that actually have values to keep the JSON concise."
-                f"{filter_instruction}\n"
-                "2. Return raw valid JSON only. Do not wrap in markdown code blocks.\n"
-                "3. Do NOT explain your reasoning. Do NOT use <think> blocks. Output JSON immediately."
+                f"/no_think\n"
+                f"Extract student data from this image as JSON.\n"
+                f"{filter_instruction}\n\n"
+                f"Output ONLY this JSON (omit null fields):\n"
+                f'{{"type":"table","records":[{{"name":"...","department":"Computer Science|Electronics|Mechanical|Civil|Data Science|AI & ML","cgpa":0.0,"roll_number":"..."}}]}}\n'
+                f"Dept abbreviations: CSE=Computer Science, AIML=AI & ML, MECH=Mechanical, CIVIL=Civil.\n"
+                f"No markdown. No explanation. JSON only."
             )
-
-            # Prepend /no_think to disable Qwen's chain-of-thought thinking mode
-            # so all output tokens go to JSON, not reasoning.
-            no_think_prompt = "/no_think\n\n" + vision_prompt
 
             response = self.client.chat.completions.create(
                 model="qwen/qwen3.6-27b",
                 messages=[
                     {
                         "role": "system",
-                        "content": (
-                            "You are a JSON-only data extraction API. "
-                            "You MUST output ONLY a valid JSON object. "
-                            "You MUST NOT use <think> tags, reasoning blocks, or any explanatory text. "
-                            "Your entire response must be a single parseable JSON object."
-                        ),
+                        "content": "Output ONLY valid JSON. No thinking. No explanation.",
                     },
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": no_think_prompt},
+                            {"type": "text", "text": vision_prompt},
                             {
                                 "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:{mime_type};base64,{base64_image}"
-                                },
+                                "image_url": {"url": f"data:{mime_type};base64,{base64_image}"},
                             },
                         ],
-                    }
+                    },
                 ],
-                max_tokens=16384,
-                temperature=0.1,
+                max_tokens=3500,
+                temperature=0.0,
             )
 
             raw_content = response.choices[0].message.content
@@ -236,28 +203,93 @@ class GroqService:
                 logger.warning("[Groq Vision] Empty response from vision model.")
                 return None
 
-            # Clean and extract JSON
-            import re
-            
-            # 1. Remove <think>...</think> block if present
-            clean_json = re.sub(r"<think>[\s\S]*?</think>", "", raw_content).strip()
-
-            # 2. Extract JSON block between ```json and ``` if present
-            match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", clean_json, re.IGNORECASE)
-            if match:
-                clean_json = match.group(1).strip()
+            # ── Strategy 1: Parse JSON from outside the <think> block ──────────────────
+            clean = re.sub(r"<think>[\s\S]*?</think>", "", raw_content).strip()
+            md_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", clean, re.IGNORECASE)
+            if md_match:
+                clean = md_match.group(1).strip()
             else:
-                # 3. Fallback: Find outermost curly braces { ... }
-                match_json = re.search(r"(\{[\s\S]*\})", clean_json)
-                if match_json:
-                    clean_json = match_json.group(1).strip()
+                j_match = re.search(r"(\{[\s\S]*\})", clean)
+                if j_match:
+                    clean = j_match.group(1).strip()
 
-            import json
-            data = json.loads(clean_json)
-            logger.info(f"[Groq Vision] Successfully parsed image of type: {data.get('type')}")
-            return data
+            if clean:
+                try:
+                    data = _json.loads(clean)
+                    n = len(data.get("records") or [])
+                    logger.info(f"[Groq Vision] JSON parsed OK — type={data.get('type')} records={n}")
+                    return data
+                except _json.JSONDecodeError:
+                    logger.warning("[Groq Vision] JSON parse failed; trying think-block fallback.")
+
+            # ── Strategy 2: Parse matched records from <think> block ─────────────────
+            # The model always writes "Row N: ID XXXX, Name ..., Dept CSE, CGPA X.XX. (Match"
+            # for every row that satisfies the filter, even when it runs out of tokens
+            # before producing the JSON output section.
+            think_match = re.search(r"<think>([\s\S]*?)(?:</think>|$)", raw_content)
+            if think_match:
+                think_content = think_match.group(1)
+
+                DEPT_MAP = {
+                    "CSE": "Computer Science",
+                    "AIML": "AI & ML",
+                    "AI&ML": "AI & ML",
+                    "MECH": "Mechanical",
+                    "CIVIL": "Civil",
+                    "ECE": "Electronics",
+                    "EC": "Electronics",
+                    "DS": "Data Science",
+                }
+
+                # Match lines like: "Row 5: ID 5005, Name Student 05, Dept CSE, CGPA 9.18. (Match"
+                row_iter = re.finditer(
+                    r"Row\s+\d+:\s+ID\s+(\S+),\s+Name\s+(.+?),\s+Dept\s+(\S+),\s+CGPA\s+([\d.]+).*?\(Match",
+                    think_content,
+                )
+                records = []
+                for m in row_iter:
+                    roll, name, dept, cgpa = (
+                        m.group(1).strip(),
+                        m.group(2).strip(),
+                        m.group(3).strip().upper(),
+                        m.group(4).strip(),
+                    )
+                    try:
+                        cgpa_f = round(float(cgpa), 2)
+                        if not (0.0 <= cgpa_f <= 10.0):
+                            continue
+                    except ValueError:
+                        continue
+                    records.append({
+                        "name": name,
+                        "department": DEPT_MAP.get(dept, dept),
+                        "cgpa": cgpa_f,
+                        "roll_number": roll,
+                    })
+
+                # Deduplicate by roll_number, sort by cgpa desc
+                seen: set = set()
+                unique = []
+                for r in records:
+                    if r["roll_number"] not in seen:
+                        seen.add(r["roll_number"])
+                        unique.append(r)
+                unique.sort(key=lambda x: x["cgpa"], reverse=True)
+
+                # Honour "top N" limit from the query string
+                limit_m = re.search(r"\btop\s+(\d+)\b", query or "", re.IGNORECASE)
+                if limit_m:
+                    unique = unique[: int(limit_m.group(1))]
+
+                if unique:
+                    logger.info(
+                        f"[Groq Vision] Extracted {len(unique)} records from think block."
+                    )
+                    return {"type": "table", "records": unique}
+
+            logger.warning("[Groq Vision] Could not extract any data from response.")
+            return None
 
         except Exception as exc:
             logger.error(f"[Groq Vision] Error extracting data from image: {exc}")
             return None
-
