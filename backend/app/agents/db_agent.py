@@ -64,6 +64,13 @@ class DBAgent(BaseAgent):
         if parsed_records:
             return self._execute_file_parsed_flow(task, structured_intent, parsed_records)
 
+        # Legacy backward compatibility check: if no "table" key AND contains legacy structured intent fields
+        is_legacy = "table" not in task.input_data and "table" not in input_result and any(
+            k in structured_intent for k in ("department", "min_cgpa", "status_filter")
+        )
+        if is_legacy:
+            return self._legacy_dispatch(task, structured_intent)
+
         # Main Vault DB Agent flow (Supabase live DB via vault_llm_plan and execute_plan)
         plan = vault_llm_plan(task.input_data)
         exec_res = execute_plan(plan)
@@ -171,16 +178,24 @@ class DBAgent(BaseAgent):
         )
 
     def _legacy_dispatch(self, task: AgentTask, structured_intent: dict) -> AgentResult:
-        """Legacy hardcoded query dispatch kept for reference and fallback."""
+        """Legacy query dispatch supporting structured_intent filters."""
         dept_filter = structured_intent.get("department")
+        status_filter = structured_intent.get("status_filter")
         min_cgpa = structured_intent.get("min_cgpa")
         limit = structured_intent.get("limit", 100)
+
+        unified_filters: list = structured_intent.get("filters") or []
+        if not unified_filters and min_cgpa is not None:
+            unified_filters = [{"field": "cgpa", "operator": ">=", "value": min_cgpa}]
 
         where_clauses = []
         if dept_filter:
             where_clauses.append(f"department = '{dept_filter}'")
-        if min_cgpa is not None:
-            where_clauses.append(f"cgpa >= {min_cgpa}")
+        for f in unified_filters:
+            if "validation_error" not in f:
+                where_clauses.append(f"{f['field']} {f['operator']} {f['value']}")
+        if status_filter:
+            where_clauses.append(f"status = '{status_filter}'")
 
         where_str = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
         sql = f"SELECT * FROM students{where_str} ORDER BY cgpa DESC LIMIT {limit};"
@@ -191,7 +206,11 @@ class DBAgent(BaseAgent):
         for student in all_students:
             if dept_filter and student.department != dept_filter:
                 continue
+            if status_filter and student.status != status_filter:
+                continue
             if min_cgpa is not None and student.cgpa < min_cgpa:
+                continue
+            if not _apply_filters(student, unified_filters):
                 continue
             filtered.append(student)
 

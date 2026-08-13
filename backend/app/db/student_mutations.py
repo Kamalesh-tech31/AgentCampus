@@ -1,17 +1,11 @@
 from typing import Dict, List, Any
 from app.db.client import supabase
 from app.db.generic_mutations import (
-    backup_before_write as generic_backup_before_write,
     generic_insert,
     generic_update,
     generic_delete,
     generic_bulk_insert,
 )
-
-
-def backup_before_write(student_id: str, action: str) -> None:
-    """Delegates to generic_backup_before_write for students table."""
-    generic_backup_before_write("students", student_id, action)
 
 
 def insert_student(data: Dict[str, Any]) -> Dict[str, Any]:

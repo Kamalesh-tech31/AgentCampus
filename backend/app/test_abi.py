@@ -810,6 +810,7 @@ def test_e_10_add_column_status_to_enrollments():
 @pytest.mark.batch3
 def test_e_11_verify_new_column_in_schema():
     """Section E.11: Confirm status column appears in live schema for enrollments."""
+    time.sleep(0.3)
     invalidate_schema_cache()
     fields = get_known_fields("enrollments")
     assert "status" in fields, "New column 'status' missing from enrollments schema!"
