@@ -13,6 +13,8 @@ from app.contracts import (
 class WorkflowState(BaseModel):
     workflow_id: str
     user_query: str
+    mode: Optional[str] = None  # "modify" | "explore" | "analyze"
+    confirmed: bool = False     # Confirmation flag for destructive mutations
     request_type: DynamicPlanRequestType = "read"
     status: str = "planning"
 
@@ -21,4 +23,4 @@ class WorkflowState(BaseModel):
     results: Dict[str, Any] = Field(default_factory=dict)
     events: List[OrchestrationEvent] = Field(default_factory=list)
     plan: Optional[DynamicPlan] = None
-    final_result: Optional[OrchestrationResult] = None
+    final_result: Optional[OrchestrationResult] = None

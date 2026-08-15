@@ -5,16 +5,28 @@ import { CenterPanel } from './components/CenterPanel';
 import { RightPanel } from './components/RightPanel';
 import { BottomInputBar } from './components/BottomInputBar';
 import { DataViewerModal } from './components/DataViewerModal';
+import { DatabasePreviewModal } from './components/DatabasePreviewModal';
+import { ModeSelectorModal } from './components/ModeSelectorModal';
+import { ConfirmationModal } from './components/ConfirmationModal';
 import { JsonViewerModal } from './components/JsonViewerModal';
-import { INITIAL_DEMO_THREAD } from './data/initialDemoData';
 import { 
+  AppMode, 
+  OutputFormat, 
   AgentState, 
   AgentType, 
   ChatThread, 
   Turn, 
   StudentRecord, 
-  OrchestrationEvent 
+  OrchestrationResult,
+  ConfirmationDetails 
 } from './types';
+import { 
+  orchestrateSync, 
+  fetchStudents, 
+  resetDatabase, 
+  fetchDatabasePreview 
+} from './services/api';
+import { CheckCircle2, AlertCircle, Info, X } from 'lucide-react';
 
 const INITIAL_AGENTS: Record<AgentType, AgentState> = {
   input: {
@@ -34,7 +46,7 @@ const INITIAL_AGENTS: Record<AgentType, AgentState> = {
     badge: 'groq-llama3-70b',
     model: 'groq-llama3-70b',
     status: 'waiting',
-    statusMessage: 'Waiting for structured intent from Input Agent...',
+    statusMessage: 'Synthesizing dynamic workflow plan...',
     logs: []
   },
   db: {
@@ -49,444 +61,532 @@ const INITIAL_AGENTS: Record<AgentType, AgentState> = {
   },
   analytics: {
     id: 'analytics',
-    name: 'Analytics Agent',
-    role: 'Aggregations, Percentiles & Statistical Metrics',
-    badge: 'data-analytics-v1',
-    model: 'data-analytics-v1',
+    name: 'Pulse Analytics Agent',
+    role: 'Deterministic Analytics, Rankings & Risk Models',
+    badge: 'pulse-engine-v1',
+    model: 'pulse-engine-v1',
     status: 'waiting',
     statusMessage: 'Waiting for DB query results...',
     logs: []
   },
   output: {
     id: 'output',
-    name: 'Output Agent',
-    role: 'Table Formatting, Summary & CSV Generation',
-    badge: 'output-formatter-v1',
-    model: 'output-formatter-v1',
+    name: 'Scribe Output Agent',
+    role: 'Table Formatting, PDF/PPT Generation & Summaries',
+    badge: 'scribe-output-v1',
+    model: 'scribe-output-v1',
     status: 'waiting',
-    statusMessage: 'Waiting for metric outputs...',
+    statusMessage: 'Waiting for analytical outputs...',
     logs: []
   }
 };
 
+const INITIAL_THREAD: ChatThread = {
+  id: 'session-1',
+  title: 'Campus Database Session',
+  mode: 'explore',
+  createdAt: 'Just now',
+  updatedAt: 'Just now',
+  turns: []
+};
+
 export default function App() {
-  // Multi-Turn Threads State
-  const [threads, setThreads] = useState<ChatThread[]>([INITIAL_DEMO_THREAD]);
-  const [selectedThreadId, setSelectedThreadId] = useState<string>(INITIAL_DEMO_THREAD.id);
-  const [selectedTurnId, setSelectedTurnId] = useState<string | undefined>(INITIAL_DEMO_THREAD.turns[0].id);
-  
+  // Theme State (Persisted in localStorage)
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    return (localStorage.getItem('agentcampus_theme') as 'light' | 'dark') || 'light';
+  });
+
+  // 3-Mode State (Persisted in localStorage)
+  const [currentMode, setCurrentMode] = useState<AppMode>(() => {
+    return (localStorage.getItem('agentcampus_mode') as AppMode) || 'explore';
+  });
+
+  // Selected Output Format for Analyze Mode
+  const [selectedFormat, setSelectedFormat] = useState<OutputFormat>('text');
+
+  // Threads & Turns State
+  const [threads, setThreads] = useState<ChatThread[]>([INITIAL_THREAD]);
+  const [selectedThreadId, setSelectedThreadId] = useState<string>(INITIAL_THREAD.id);
+  const [selectedTurnId, setSelectedTurnId] = useState<string | undefined>(undefined);
+
+  // Execution State
   const [isExecuting, setIsExecuting] = useState(false);
-  
-  // Database State
+
+  // Live Database Records
   const [students, setStudents] = useState<StudentRecord[]>([]);
 
-  // Modals State
+  // Modals & Drawers
   const [isDataViewerOpen, setIsDataViewerOpen] = useState(false);
+  const [isDbPreviewOpen, setIsDbPreviewOpen] = useState(false);
+  const [modeInfoModal, setModeInfoModal] = useState<{ isOpen: boolean; targetMode: AppMode }>({
+    isOpen: false,
+    targetMode: 'explore'
+  });
+  const [confirmationModal, setConfirmationModal] = useState<{
+    isOpen: boolean;
+    details?: ConfirmationDetails;
+    pendingQuery?: string;
+    pendingMode?: AppMode;
+    pendingFormat?: OutputFormat;
+    turnId?: string;
+  }>({
+    isOpen: false
+  });
   const [jsonModalData, setJsonModalData] = useState<{ isOpen: boolean; title: string; data: any }>({
     isOpen: false,
     title: '',
     data: null
   });
 
-  // Derived active thread and turn
-  const activeThread = threads.find(t => t.id === selectedThreadId) || threads[0];
-  const activeTurn = activeThread?.turns.find(t => t.id === selectedTurnId) || activeThread?.turns[activeThread.turns.length - 1];
+  // Toast Notifications
+  const [toast, setToast] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null);
 
-  // Fetch campus student dataset on initial mount
-  const fetchStudents = async () => {
+  const showToast = (text: string, type: 'success' | 'error' | 'info' = 'info') => {
+    setToast({ text, type });
+    setTimeout(() => {
+      setToast(null);
+    }, 4000);
+  };
+
+  // Sync theme with DOM and localStorage
+  useEffect(() => {
+    localStorage.setItem('agentcampus_theme', theme);
+    if (theme === 'dark') {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [theme]);
+
+  // Sync mode with localStorage
+  useEffect(() => {
+    localStorage.setItem('agentcampus_mode', currentMode);
+  }, [currentMode]);
+
+  const toggleTheme = () => {
+    setTheme(prev => (prev === 'light' ? 'dark' : 'light'));
+  };
+
+  // Load initial student records from backend
+  const loadStudents = async () => {
     try {
-      const res = await fetch('/api/students');
-      if (res.ok) {
-        const data = await res.json();
-        setStudents(data.students || []);
-      }
-    } catch (err) {
-      console.error('Failed to fetch students:', err);
+      const data = await fetchStudents();
+      setStudents(data);
+    } catch {
+      // Backend may be starting up
     }
   };
 
   useEffect(() => {
-    fetchStudents();
+    loadStudents();
   }, []);
 
-  // Reset DB
-  const handleResetDb = async () => {
-    try {
-      const res = await fetch('/api/students/reset', { method: 'POST' });
-      if (res.ok) {
-        await fetchStudents();
-      }
-    } catch (err) {
-      console.error('Failed to reset DB:', err);
-    }
+  const activeThread = threads.find(t => t.id === selectedThreadId) || threads[0];
+  const activeTurn = activeThread?.turns.find(t => t.id === selectedTurnId) || activeThread?.turns[activeThread.turns.length - 1];
+
+  // Handle Mode Change
+  const handleSelectMode = (mode: AppMode) => {
+    setCurrentMode(mode);
+    // Update active thread's mode
+    setThreads(prev =>
+      prev.map(t => (t.id === selectedThreadId ? { ...t, mode, updatedAt: 'Just now' } : t))
+    );
+    showToast(`Switched to ${mode.toUpperCase()} mode.`, 'info');
   };
 
-  // Main SSE Orchestration Stream Handler
-  const handleRunPipeline = async (prompt: string) => {
-    if (!prompt.trim() || isExecuting) return;
+  // Run Real Pipeline
+  const handleRunPipeline = async (promptText: string, overrideMode?: AppMode, overrideFormat?: OutputFormat) => {
+    if (isExecuting || !promptText.trim()) return;
 
-    setIsExecuting(true);
-
-    const nowStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const modeToUse = overrideMode || currentMode;
+    const formatToUse = overrideFormat || selectedFormat;
     const newTurnId = `turn-${Date.now()}`;
+    const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    // Build initial turn with all agents waiting
+    const initialTurnAgents: Record<AgentType, AgentState> = JSON.parse(JSON.stringify(INITIAL_AGENTS));
+    initialTurnAgents.input.status = 'running';
+    initialTurnAgents.input.statusMessage = 'Parsing natural language intent...';
+    initialTurnAgents.mother.status = 'running';
+    initialTurnAgents.mother.statusMessage = 'Synthesizing dynamic workflow plan...';
 
     const newTurn: Turn = {
       id: newTurnId,
-      timestamp: nowStr,
-      prompt,
+      timestamp,
+      prompt: promptText,
+      mode: modeToUse,
+      outputFormat: formatToUse,
       status: 'running',
-      agents: JSON.parse(JSON.stringify(INITIAL_AGENTS))
+      agents: initialTurnAgents,
     };
 
-    let targetThreadId = selectedThreadId;
-
-    setThreads(prevThreads => {
-      let threadExists = prevThreads.some(t => t.id === targetThreadId);
-      
-      if (!threadExists || !targetThreadId) {
-        const newThreadId = `chat-${Date.now()}`;
-        targetThreadId = newThreadId;
-        setSelectedThreadId(newThreadId);
-        
-        const newThread: ChatThread = {
-          id: newThreadId,
-          title: prompt.length > 32 ? prompt.slice(0, 32) + '...' : prompt,
-          createdAt: nowStr,
-          updatedAt: nowStr,
-          turns: [newTurn]
-        };
-        return [newThread, ...prevThreads];
-      }
-
-      return prevThreads.map(thread => {
-        if (thread.id === targetThreadId) {
-          const isFirstTurn = thread.turns.length === 0;
+    setThreads(prev =>
+      prev.map(t => {
+        if (t.id === selectedThreadId) {
+          const updatedTurns = [...t.turns, newTurn];
           return {
-            ...thread,
-            title: isFirstTurn || thread.title === 'New Conversation' 
-              ? (prompt.length > 32 ? prompt.slice(0, 32) + '...' : prompt)
-              : thread.title,
-            updatedAt: nowStr,
-            turns: [...thread.turns, newTurn]
+            ...t,
+            title: t.turns.length === 0 ? promptText.slice(0, 30) + '...' : t.title,
+            mode: modeToUse,
+            updatedAt: 'Just now',
+            turns: updatedTurns,
           };
         }
-        return thread;
-      });
-    });
-
+        return t;
+      })
+    );
     setSelectedTurnId(newTurnId);
+    setIsExecuting(true);
 
     try {
-      const response = await fetch('/api/orchestrate/stream', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt })
-      });
+      // Real backend API call
+      const res: OrchestrationResult = await orchestrateSync(promptText, modeToUse, false, formatToUse);
 
-      if (!response.ok || !response.body) {
-        throw new Error('Failed to connect to orchestration stream');
+      // Check if backend requires confirmation
+      if (res.requiresConfirmation && res.confirmationDetails) {
+        // Mark turn as awaiting confirmation
+        setThreads(prev =>
+          prev.map(t => {
+            if (t.id === selectedThreadId) {
+              const updatedTurns = t.turns.map(tn => {
+                if (tn.id === newTurnId) {
+                  const updatedAgents = { ...tn.agents };
+                  updatedAgents.input.status = 'complete';
+                  updatedAgents.mother.status = 'complete';
+                  updatedAgents.db.status = 'waiting';
+                  updatedAgents.db.statusMessage = 'Awaiting explicit safety confirmation...';
+
+                  return {
+                    ...tn,
+                    status: 'waiting' as any,
+                    result: res,
+                    plan: res.rawPlan,
+                    agents: updatedAgents,
+                  };
+                }
+                return tn;
+              });
+              return { ...t, turns: updatedTurns };
+            }
+            return t;
+          })
+        );
+
+        setConfirmationModal({
+          isOpen: true,
+          details: res.confirmationDetails,
+          pendingQuery: promptText,
+          pendingMode: modeToUse,
+          pendingFormat: formatToUse,
+          turnId: newTurnId,
+        });
+
+        setIsExecuting(false);
+        return;
       }
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
+      // Populate actual agent completion statuses based on backend execution
+      const completedAgents: Record<AgentType, AgentState> = JSON.parse(JSON.stringify(INITIAL_AGENTS));
+      completedAgents.input.status = 'complete';
+      completedAgents.input.statusMessage = 'Intent & entities parsed successfully.';
+      completedAgents.mother.status = 'complete';
+      completedAgents.mother.statusMessage = 'Plan synthesized and executed.';
+      completedAgents.db.status = 'complete';
+      completedAgents.db.statusMessage = modeToUse === 'modify' ? 'Database modified.' : 'Query executed.';
 
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
+      if (modeToUse === 'analyze') {
+        completedAgents.analytics.status = 'complete';
+        completedAgents.analytics.statusMessage = 'Deterministic metrics and insights calculated.';
+      } else {
+        completedAgents.analytics.status = 'waiting';
+      }
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n\n');
-        buffer = lines.pop() || '';
+      completedAgents.output.status = 'complete';
+      completedAgents.output.statusMessage = res.outputFile ? `Generated ${res.outputFormat?.toUpperCase()} artifact.` : 'Summary generated.';
 
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (trimmed.startsWith('data: ')) {
-            const jsonStr = trimmed.substring(6);
-            try {
-              const event: OrchestrationEvent = JSON.parse(jsonStr);
-              processOrchestrationEvent(event, targetThreadId!, newTurnId);
-            } catch (err) {
-              console.warn('Failed to parse SSE event JSON:', err, jsonStr);
-            }
+      setThreads(prev =>
+        prev.map(t => {
+          if (t.id === selectedThreadId) {
+            const updatedTurns = t.turns.map(tn => {
+              if (tn.id === newTurnId) {
+                return {
+                  ...tn,
+                  status: 'complete' as any,
+                  result: res,
+                  plan: res.rawPlan,
+                  agents: completedAgents,
+                };
+              }
+              return tn;
+            });
+            return { ...t, turns: updatedTurns };
           }
-        }
+          return t;
+        })
+      );
+
+      // If modification occurred, immediately refresh live student dataset and DB preview
+      if (modeToUse === 'modify') {
+        await loadStudents();
+        showToast('Database updated successfully. Preview refreshed.', 'success');
+      } else {
+        showToast('Execution finished successfully.', 'success');
       }
     } catch (err: any) {
-      console.error('Orchestration stream error:', err);
-      updateTurnState(targetThreadId!, newTurnId, (turn) => ({
-        ...turn,
-        status: 'failed'
-      }));
+      // Mark turn as failed
+      setThreads(prev =>
+        prev.map(t => {
+          if (t.id === selectedThreadId) {
+            const updatedTurns = t.turns.map(tn => {
+              if (tn.id === newTurnId) {
+                const failedAgents = { ...tn.agents };
+                failedAgents.input.status = 'failed';
+                failedAgents.mother.status = 'failed';
+                return {
+                  ...tn,
+                  status: 'failed' as any,
+                  result: {
+                    summary: err.message || 'Unable to connect to AgentCampus backend.',
+                  },
+                  agents: failedAgents,
+                };
+              }
+              return tn;
+            });
+            return { ...t, turns: updatedTurns };
+          }
+          return t;
+        })
+      );
+      showToast(err.message || 'Backend execution failed.', 'error');
     } finally {
       setIsExecuting(false);
-      await fetchStudents();
     }
   };
 
-  // Helper to update specific turn inside state
-  const updateTurnState = (
-    threadId: string, 
-    turnId: string, 
-    updater: (turn: Turn) => Turn
-  ) => {
-    setThreads(prev => prev.map(t => {
-      if (t.id === threadId) {
-        return {
-          ...t,
-          turns: t.turns.map(tn => tn.id === turnId ? updater(tn) : tn)
-        };
-      }
-      return t;
-    }));
-  };
+  // Confirm and Apply Dangerous Mutation
+  const handleConfirmDatabaseChange = async () => {
+    if (!confirmationModal.pendingQuery) return;
+    setIsExecuting(true);
 
-  // Process Event Dispatcher
-  const processOrchestrationEvent = (
-    event: OrchestrationEvent, 
-    threadId: string, 
-    turnId: string
-  ) => {
-    const timestampStr = new Date().toLocaleTimeString();
+    try {
+      const res = await orchestrateSync(
+        confirmationModal.pendingQuery,
+        'modify',
+        true
+      );
 
-    switch (event.type) {
-      case 'AGENT_STARTED':
-        if (event.agentId) {
-          const agId = event.agentId;
-          updateTurnState(threadId, turnId, (turn) => {
-            const nextAgents = { ...turn.agents };
-            nextAgents[agId] = {
-              ...nextAgents[agId],
-              status: 'running',
-              statusMessage: event.message || `Executing ${agId} agent...`,
-              startTime: event.timestamp,
-              logs: [
-                ...nextAgents[agId].logs,
-                { id: `log-${Date.now()}-${Math.random()}`, timestamp: timestampStr, agentId: agId, level: 'info', message: event.message || 'Started' }
-              ]
-            };
-            return { ...turn, agents: nextAgents };
-          });
-        }
-        break;
+      setConfirmationModal({ isOpen: false });
 
-      case 'AGENT_WORKING':
-        if (event.agentId) {
-          const agId = event.agentId;
-          updateTurnState(threadId, turnId, (turn) => {
-            const nextAgents = { ...turn.agents };
-            const currentLogs = nextAgents[agId].logs;
-            const newLog = event.log || {
-              id: `log-${Date.now()}-${Math.random()}`,
-              timestamp: timestampStr,
-              agentId: agId,
-              level: 'working',
-              message: event.message || 'Working...'
-            };
+      // Update turn
+      if (confirmationModal.turnId) {
+        const turnId = confirmationModal.turnId;
+        const completedAgents: Record<AgentType, AgentState> = JSON.parse(JSON.stringify(INITIAL_AGENTS));
+        completedAgents.input.status = 'complete';
+        completedAgents.mother.status = 'complete';
+        completedAgents.db.status = 'complete';
+        completedAgents.db.statusMessage = 'Destructive mutation confirmed and executed.';
+        completedAgents.output.status = 'complete';
+        completedAgents.output.statusMessage = 'Summary generated.';
 
-            nextAgents[agId] = {
-              ...nextAgents[agId],
-              statusMessage: event.message || nextAgents[agId].statusMessage,
-              logs: [...currentLogs, newLog]
-            };
-            return { ...turn, agents: nextAgents };
-          });
-        }
-        break;
-
-      case 'PLAN_UPDATED':
-        if (event.plan) {
-          updateTurnState(threadId, turnId, (turn) => ({
-            ...turn,
-            plan: event.plan
-          }));
-        }
-        break;
-
-      case 'AGENT_COMPLETED':
-        if (event.agentId) {
-          const agId = event.agentId;
-          updateTurnState(threadId, turnId, (turn) => {
-            const nextAgents = { ...turn.agents };
-            const startTime = nextAgents[agId].startTime || event.timestamp;
-            const durationMs = event.timestamp - startTime;
-
-            let updatedPlan = turn.plan;
-            if (updatedPlan) {
-              const updatedSteps = updatedPlan.steps.map(s => {
-                if (s.agent === agId) {
-                  return { ...s, status: 'complete' as const, liveMessage: event.message };
+        setThreads(prev =>
+          prev.map(t => {
+            if (t.id === selectedThreadId) {
+              const updatedTurns = t.turns.map(tn => {
+                if (tn.id === turnId) {
+                  return {
+                    ...tn,
+                    status: 'complete' as any,
+                    result: res,
+                    plan: res.rawPlan,
+                    agents: completedAgents,
+                  };
                 }
-                return s;
+                return tn;
               });
-              updatedPlan = { ...updatedPlan, steps: updatedSteps };
+              return { ...t, turns: updatedTurns };
             }
+            return t;
+          })
+        );
+      }
 
-            nextAgents[agId] = {
-              ...nextAgents[agId],
-              status: 'complete',
-              statusMessage: event.message || 'Completed',
-              endTime: event.timestamp,
-              durationMs,
-              outputData: event.agentState?.outputData || nextAgents[agId].outputData,
-              logs: [
-                ...nextAgents[agId].logs,
-                { id: `log-${Date.now()}-${Math.random()}`, timestamp: timestampStr, agentId: agId, level: 'success', message: event.message || 'Completed step successfully.' }
-              ]
-            };
-
-            // Calculate total turn duration if output agent finishes
-            const totalDuration = Object.values(nextAgents).reduce((acc, a) => acc + (a.durationMs || 0), 0);
-
-            return {
-              ...turn,
-              agents: nextAgents,
-              plan: updatedPlan,
-              durationMs: totalDuration > 0 ? totalDuration : turn.durationMs
-            };
-          });
-        }
-        break;
-
-      case 'RESULT_READY':
-        if (event.result) {
-          updateTurnState(threadId, turnId, (turn) => ({
-            ...turn,
-            status: 'complete',
-            result: event.result
-          }));
-          if (event.result.data) {
-            setStudents(event.result.data);
-          }
-        }
-        break;
-
-      case 'AGENT_FAILED':
-        if (event.agentId) {
-          const agId = event.agentId;
-          updateTurnState(threadId, turnId, (turn) => {
-            const nextAgents = { ...turn.agents };
-            nextAgents[agId] = {
-              ...nextAgents[agId],
-              status: 'failed',
-              statusMessage: event.message || 'Failed',
-              logs: [
-                ...nextAgents[agId].logs,
-                { id: `log-${Date.now()}-${Math.random()}`, timestamp: timestampStr, agentId: agId, level: 'error', message: event.message || 'Agent failed.' }
-              ]
-            };
-            return {
-              ...turn,
-              status: 'failed',
-              agents: nextAgents
-            };
-          });
-        }
-        break;
+      await loadStudents();
+      showToast('Database updated successfully. Preview refreshed.', 'success');
+    } catch (err: any) {
+      showToast(err.message || 'Failed to apply confirmed mutation.', 'error');
+    } finally {
+      setIsExecuting(false);
     }
   };
 
-  // Export CSV
-  const handleExportCsv = () => {
-    const csvContent = activeTurn?.result?.csvData || 'ID,RollNumber,Name,Department,CGPA\n';
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', `agent_campus_export_${Date.now()}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
-  // Select item/thread from sidebar
-  const handleSelectThread = (id: string) => {
-    setSelectedThreadId(id);
-    const thread = threads.find(t => t.id === id);
-    if (thread && thread.turns.length > 0) {
-      setSelectedTurnId(thread.turns[thread.turns.length - 1].id);
-    } else {
-      setSelectedTurnId(undefined);
-    }
-  };
-
-  // Start a new conversation thread (+ New Request)
+  // New Chat Session
   const handleNewThread = () => {
-    if (isExecuting) return;
-    const nowStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const newThreadId = `chat-${Date.now()}`;
-    const newThread: ChatThread = {
-      id: newThreadId,
-      title: 'New Conversation',
-      createdAt: nowStr,
-      updatedAt: nowStr,
+    const newId = `session-${Date.now()}`;
+    const newT: ChatThread = {
+      id: newId,
+      title: 'New Session',
+      mode: currentMode,
+      createdAt: 'Just now',
+      updatedAt: 'Just now',
       turns: []
     };
-    setThreads(prev => [newThread, ...prev]);
-    setSelectedThreadId(newThreadId);
+    setThreads(prev => [newT, ...prev]);
+    setSelectedThreadId(newId);
     setSelectedTurnId(undefined);
   };
 
-  // Select specific turn in center panel
-  const handleSelectTurn = (turnId: string) => {
-    setSelectedTurnId(turnId);
+  // Reset Database
+  const handleResetDb = async () => {
+    if (isExecuting) return;
+    try {
+      await resetDatabase();
+      await loadStudents();
+      showToast('Campus database reset to initial seed state.', 'success');
+    } catch (err: any) {
+      showToast(err.message || 'Failed to reset database.', 'error');
+    }
+  };
+
+  // Export CSV / Excel
+  const handleExportCsv = () => {
+    const dataToExport = activeTurn?.result?.data || students;
+    if (!dataToExport || dataToExport.length === 0) {
+      showToast('No records available to export.', 'info');
+      return;
+    }
+
+    const headers = Object.keys(dataToExport[0]).filter(k => typeof dataToExport[0][k] !== 'object');
+    const rows = dataToExport.map(row =>
+      headers.map(h => `"${String(row[h] ?? '').replace(/"/g, '""')}"`).join(',')
+    );
+    const csvContent = [headers.join(','), ...rows].join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `agentcampus_export_${Date.now()}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    showToast('Excel/CSV export downloaded.', 'success');
   };
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-white text-gray-900 font-sans antialiased overflow-hidden select-none">
-      {/* Header */}
+    <div className="flex flex-col h-screen w-screen overflow-hidden bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 font-sans select-none transition-colors">
+      {/* Toast Notification Banner */}
+      {toast && (
+        <div className="fixed top-4 right-4 z-50 animate-in fade-in slide-in-from-top-3 duration-200">
+          <div className={`flex items-center gap-2.5 px-4 py-3 rounded-2xl shadow-xl border text-xs font-semibold ${
+            toast.type === 'success'
+              ? 'bg-emerald-50 dark:bg-emerald-950 text-emerald-900 dark:text-emerald-200 border-emerald-300 dark:border-emerald-700'
+              : toast.type === 'error'
+              ? 'bg-rose-50 dark:bg-rose-950 text-rose-900 dark:text-rose-200 border-rose-300 dark:border-rose-700'
+              : 'bg-blue-50 dark:bg-blue-950 text-blue-900 dark:text-blue-200 border-blue-300 dark:border-blue-700'
+          }`}>
+            {toast.type === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />}
+            {toast.type === 'error' && <AlertCircle className="w-4 h-4 text-rose-600 dark:text-rose-400" />}
+            {toast.type === 'info' && <Info className="w-4 h-4 text-blue-600 dark:text-blue-400" />}
+            <span>{toast.text}</span>
+            <button onClick={() => setToast(null)} className="ml-2 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Global Header */}
       <Header
-        studentCount={students.length}
-        activeAgentsCount={5}
+        currentMode={currentMode}
+        onSelectMode={handleSelectMode}
+        onOpenModeInfo={(mode) => setModeInfoModal({ isOpen: true, targetMode: mode })}
+        onOpenDatabasePreview={() => setIsDbPreviewOpen(true)}
         onResetDb={handleResetDb}
-        onOpenDataViewer={() => setIsDataViewerOpen(true)}
         isExecuting={isExecuting}
+        theme={theme}
+        onToggleTheme={toggleTheme}
       />
 
-      {/* Main 3-Panel Split Area */}
-      <div className="flex-1 flex min-h-0 divide-x divide-gray-200 overflow-hidden">
-        {/* LEFT PANEL */}
+      {/* Main 3-Column Layout */}
+      <div className="flex-1 flex overflow-hidden min-h-0">
+        {/* Left Column: Sessions Sidebar */}
         <LeftPanel
           threads={threads}
           selectedThreadId={selectedThreadId}
-          onSelectThread={handleSelectThread}
+          onSelectThread={(id) => {
+            setSelectedThreadId(id);
+            const t = threads.find(th => th.id === id);
+            if (t) setCurrentMode(t.mode);
+          }}
           onNewThread={handleNewThread}
         />
 
-        {/* CENTER PANEL */}
-        <CenterPanel
-          turns={activeThread?.turns || []}
-          selectedTurnId={selectedTurnId}
-          onSelectTurn={handleSelectTurn}
-          isExecuting={isExecuting}
-          onOpenJsonModal={(title, data) => setJsonModalData({ isOpen: true, title, data })}
-          onSelectPreset={(p) => handleRunPipeline(p)}
-        />
+        {/* Center Column: Execution Timeline & Main Chat */}
+        <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
+          <CenterPanel
+            turns={activeThread?.turns || []}
+            selectedTurnId={selectedTurnId}
+            onSelectTurn={setSelectedTurnId}
+            isExecuting={isExecuting}
+            currentMode={currentMode}
+            onOpenJsonModal={(title, data) => setJsonModalData({ isOpen: true, title, data })}
+            onSelectPreset={(p) => handleRunPipeline(p)}
+          />
 
-        {/* RIGHT PANEL */}
+          {/* Bottom Interactive Bar */}
+          <BottomInputBar
+            currentMode={currentMode}
+            selectedFormat={selectedFormat}
+            onSelectFormat={setSelectedFormat}
+            onSubmitPrompt={(p) => handleRunPipeline(p)}
+            isExecuting={isExecuting}
+          />
+        </div>
+
+        {/* Right Column: Plan & Results Panel */}
         <RightPanel
+          mode={currentMode}
           plan={activeTurn?.plan}
           result={activeTurn?.result}
           activeTurnPrompt={activeTurn?.prompt}
           isExecuting={isExecuting}
           onOpenDataViewer={() => setIsDataViewerOpen(true)}
-          onOpenSqlViewer={(sql) => setJsonModalData({ isOpen: true, title: 'Executed SQL Statement', data: { sql } })}
-          onOpenPlanJson={() => setJsonModalData({ isOpen: true, title: 'Raw Mother Agent Plan JSON', data: activeTurn?.plan })}
+          onOpenDatabasePreview={() => setIsDbPreviewOpen(true)}
+          onOpenSqlViewer={(sql) => setJsonModalData({ isOpen: true, title: 'SQL Execution Trace', data: sql })}
+          onOpenPlanJson={() => setJsonModalData({ isOpen: true, title: 'Dynamic Plan Schema', data: activeTurn?.plan })}
           onExportCsv={handleExportCsv}
         />
       </div>
 
-      {/* BOTTOM INPUT BAR */}
-      <BottomInputBar
-        onSubmitPrompt={handleRunPipeline}
+      {/* Modals & Dialogs */}
+      <ModeSelectorModal
+        isOpen={modeInfoModal.isOpen}
+        onClose={() => setModeInfoModal({ isOpen: false, targetMode: currentMode })}
+        currentMode={currentMode}
+        targetMode={modeInfoModal.targetMode}
+        onSelectMode={handleSelectMode}
+        onSelectExamplePrompt={(p, m) => handleRunPipeline(p, m)}
+      />
+
+      <DatabasePreviewModal
+        isOpen={isDbPreviewOpen}
+        onClose={() => setIsDbPreviewOpen(false)}
+        onRefreshSuccess={() => showToast('Database preview refreshed with live data.', 'info')}
+      />
+
+      <ConfirmationModal
+        isOpen={confirmationModal.isOpen}
+        onClose={() => setConfirmationModal({ isOpen: false })}
+        onConfirm={handleConfirmDatabaseChange}
+        details={confirmationModal.details}
         isExecuting={isExecuting}
       />
 
-      {/* MODALS */}
       <DataViewerModal
         isOpen={isDataViewerOpen}
         onClose={() => setIsDataViewerOpen(false)}
-        students={students}
+        students={activeTurn?.result?.data || students}
         sqlQuery={activeTurn?.result?.queryExecuted}
         onExportCsv={handleExportCsv}
       />
@@ -495,7 +595,7 @@ export default function App() {
         isOpen={jsonModalData.isOpen}
         onClose={() => setJsonModalData({ isOpen: false, title: '', data: null })}
         title={jsonModalData.title}
-        jsonData={jsonModalData.data}
+        data={jsonModalData.data}
       />
     </div>
   );

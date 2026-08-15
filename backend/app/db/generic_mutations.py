@@ -208,8 +208,8 @@ def _resolve_row_id(table: str, row_id: str) -> tuple[str, str]:
     Resolves caller-provided row_id to the exact database column and primary key 'id'.
     Primary path: checks eq("id", row_id). If matched, returns ("id", row_id).
     Secondary fallback path:
-      - 'students' table: fallback to eq("rollNumber", row_id).
-      - 'courses' table: fallback to eq("courseCode", row_id).
+      - 'students' table: fallback to eq("rollNumber", row_id), eq("roll_number", row_id), or name match.
+      - 'courses' table: fallback to eq("courseCode", row_id), eq("course_code", row_id), or name match.
     Returns (match_column_name, primary_id_val).
     If no match is found, returns ("id", row_id) so caller produces consistent "Row not found" error.
     """
@@ -220,23 +220,48 @@ def _resolve_row_id(table: str, row_id: str) -> tuple[str, str]:
     except Exception:
         pass
 
-    fallback_col = None
     if table.lower() == "students":
-        fallback_col = "rollNumber"
-    elif table.lower() == "courses":
-        fallback_col = "courseCode"
-
-    if fallback_col:
+        for col in ("rollNumber", "roll_number"):
+            try:
+                res_fb = supabase.table(table).select("id", col).eq(col, row_id).execute()
+                if res_fb.data and len(res_fb.data) > 0:
+                    real_id = res_fb.data[0]["id"]
+                    return (col, real_id)
+            except Exception:
+                pass
         try:
-            res_fb = supabase.table(table).select("id", fallback_col).eq(fallback_col, row_id).execute()
-            if res_fb.data and len(res_fb.data) > 0:
-                real_id = res_fb.data[0]["id"]
-                logger.info(f"[GenericMutations] Resolved {table} natural key '{fallback_col}={row_id}' -> primary key id='{real_id}'")
-                return (fallback_col, real_id)
+            res_name = supabase.table(table).select("id", "name").ilike("name", f"%{row_id}%").execute()
+            if res_name.data and len(res_name.data) > 0:
+                real_id = res_name.data[0]["id"]
+                return ("name", real_id)
         except Exception:
             pass
 
+        # In-memory student service fallback
+        try:
+            from app.services.student_service import student_service
+            for s in student_service.get_students():
+                if s.id == row_id:
+                    return ("id", s.id)
+                if s.roll_number == row_id:
+                    return ("rollNumber", s.id)
+                if s.name and row_id.lower() in s.name.lower():
+                    return ("name", s.id)
+        except Exception:
+            pass
+
+    elif table.lower() == "courses":
+        for col in ("courseCode", "course_code", "course_name", "courseName"):
+            try:
+                res_fb = supabase.table(table).select("id", col).ilike(col, f"%{row_id}%").execute()
+                if res_fb.data and len(res_fb.data) > 0:
+                    real_id = res_fb.data[0]["id"]
+                    return (col, real_id)
+            except Exception:
+                pass
+
     return ("id", row_id)
+
 
 
 def generic_update(table: str, row_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -359,6 +384,88 @@ def generic_delete(
         "data": deleted_rows,
         "message": f"Successfully deleted {rows_deleted} row(s) from {table}.",
     }
+
+
+def estimate_affected_rows(table: str, action: str, params: Dict[str, Any]) -> int:
+    """
+    Estimates the number of rows that would be affected by a mutation before executing it.
+    Used for safety confirmation on destructive or bulk operations.
+    """
+    if action in ("insert_row", "restore_row", "revert_row"):
+        return 1
+
+    row_id = params.get("row_id") or params.get("rowId") or params.get("id")
+    if row_id:
+        return 1
+
+    filters = params.get("filters", [])
+    if not filters and "field" in params:
+        filters = [{"field": params["field"], "op": params.get("op", "eq"), "value": params.get("value")}]
+
+    if not filters and action == "delete_row":
+        try:
+            from app.db.client import supabase
+            res = supabase.table(table).select("id", count="exact").execute()
+            if res.count is not None:
+                return res.count
+        except Exception:
+            pass
+        from app.services.student_service import student_service
+        return len(student_service.get_students())
+
+    if filters:
+        try:
+            from app.db.client import supabase
+            query = supabase.table(table).select("id", count="exact")
+            for f in filters:
+                field = f.get("field")
+                op = f.get("op", "eq")
+                val = f.get("value")
+                if field and hasattr(query, op):
+                    query = getattr(query, op)(field, val)
+            res = query.execute()
+            if res.count is not None and res.count > 0:
+                return res.count
+        except Exception:
+            pass
+
+        # In-memory estimate fallback for students
+        if table == "students":
+            from app.services.student_service import student_service
+            students = student_service.get_students()
+            count = 0
+            for s in students:
+                s_dict = s.model_dump(by_alias=True)
+                match = True
+                for f in filters:
+                    fld = f.get("field")
+                    op = f.get("op", "eq")
+                    val = f.get("value")
+                    actual_val = s_dict.get(fld, getattr(s, fld, None))
+                    if actual_val is None:
+                        match = False
+                        break
+                    try:
+                        if op == "eq" and str(actual_val).lower() != str(val).lower():
+                            match = False
+                        elif op == "lt" and not (float(actual_val) < float(val)):
+                            match = False
+                        elif op == "lte" and not (float(actual_val) <= float(val)):
+                            match = False
+                        elif op == "gt" and not (float(actual_val) > float(val)):
+                            match = False
+                        elif op == "gte" and not (float(actual_val) >= float(val)):
+                            match = False
+                        elif op == "neq" and str(actual_val).lower() == str(val).lower():
+                            match = False
+                    except (ValueError, TypeError):
+                        match = False
+                if match:
+                    count += 1
+            return count
+
+    return 1
+
 
 
 def bulk_update(

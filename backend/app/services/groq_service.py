@@ -26,6 +26,39 @@ class GroqPlanPayload(BaseModel):
     steps: List[GroqStep]
 
 
+# ── Scribe Report Planning Schemas ──────────────────────────────────────────
+
+class ReportSection(BaseModel):
+    title: str
+    type: str  # "summary" | "statistics" | "table" | "chart" | "insights" | "recommendations"
+    content: Optional[str] = None
+    data_priority: Optional[str] = None
+    recommended_chart: Optional[str] = None
+
+
+class ReportPlan(BaseModel):
+    report_title: str
+    report_type: str
+    executive_summary: Optional[str] = None
+    sections: List[ReportSection]
+
+
+class SlidePlan(BaseModel):
+    slide_title: str
+    slide_type: str  # "title" | "kpi_dashboard" | "chart" | "table" | "insights" | "recommendation" | "conclusion"
+    key_points: List[str]
+    insights: Optional[str] = None
+    recommended_chart: Optional[str] = None
+    priority: int = 1
+
+
+class PresentationPlan(BaseModel):
+    presentation_title: str
+    presentation_subtitle: Optional[str] = None
+    presentation_style: str = "executive"
+    slides: List[SlidePlan]
+
+
 class GroqService:
     """Service abstraction for LLM planning via Groq API with automatic key fallback."""
 
@@ -36,12 +69,23 @@ class GroqService:
     ):
         self.api_key = api_key or os.getenv("GROQ_API_KEY")
         self.model = model or os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+        self.client = None
+        if self.api_key:
+            try:
+                from groq import Groq
+                self.client = Groq(api_key=self.api_key)
+            except Exception:
+                self.client = None
 
     def generate_plan(self, prompt: str) -> Optional[GroqPlanPayload]:
         """
         Sends planning prompt to Groq LLM and returns validated GroqPlanPayload.
         Automatically retries with GROQ_API_KEY_2 if rate limit occurs.
         """
+        if not self.api_key and not self.client:
+            logger.info("[Groq] No API key configured; returning None for deterministic fallback.")
+            return None
+
         logger.info(f"[Groq] Generating workflow plan for prompt: '{prompt[:40]}...'")
 
         system_prompt = (
@@ -74,15 +118,27 @@ class GroqService:
         )
 
         try:
-            raw_content = call_groq_completion(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt},
-                ],
-                model=self.model,
-                response_format={"type": "json_object"},
-                temperature=0.1,
-            )
+            if self.client:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": prompt},
+                    ],
+                    response_format={"type": "json_object"},
+                    temperature=0.1,
+                )
+                raw_content = response.choices[0].message.content
+            else:
+                raw_content = call_groq_completion(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": prompt},
+                    ],
+                    model=self.model,
+                    response_format={"type": "json_object"},
+                    temperature=0.1,
+                )
 
             if not raw_content:
                 logger.warning("[Groq] Empty response received from Groq LLM.")
@@ -111,6 +167,194 @@ class GroqService:
 
         except Exception as exc:
             logger.error(f"[Groq] API error or validation failure: {exc}")
+            return None
+
+    def generate_ppt_plan(self, prompt: str, data_summary: str) -> Optional[PresentationPlan]:
+        """
+        Sends presentation planning prompt to Groq LLM and returns validated PresentationPlan.
+        Returns None if Groq is unconfigured, disabled, or returns invalid plan.
+        """
+        if not self.client:
+            logger.info("[Groq] API unavailable or unconfigured; returning None for fallback.")
+            return None
+
+        logger.info(f"[Groq] Generating PPT plan for prompt: '{prompt[:40]}...'")
+
+        system_prompt = (
+            "You are an expert Presentation Designer for AgentCampus.\n"
+            "Your job is to analyze the user's request and the available data summary to create a structured PowerPoint presentation plan.\n\n"
+            "You do NOT write python code. You only produce a structured JSON plan.\n\n"
+            "STRICT RULES:\n"
+            "1. NO FIXED OR GENERIC SLIDES. Never automatically generate generic slides like 'Executive Summary', 'Introduction', 'Overview', 'CGPA Distribution', 'Department Performance', generic conclusions, or generic recommendations unless they are directly relevant to the user request.\n"
+            "2. DYNAMIC CONTENT: The presentation title, slide titles, slide types, key points, charts, insights, and recommendations must be completely custom-tailored to the user query and the available data.\n"
+            "3. If the user asks about risk/probation, focus the entire presentation structure around risk analysis, at-risk students, root causes, and risk-related interventions. Do not include unrelated department/academic statistics.\n"
+            "4. For slides of type 'table': if the data summary lists specific tables (e.g. 'at_risk_students'), focus the slide on that specific data.\n"
+            "5. For slides of type 'chart': if the data summary lists specific charts (e.g. 'risk_pie', 'group_bar'), specify it in 'recommended_chart'. Otherwise, use 'cgpa_distribution', 'department_performance', or null.\n"
+            "6. Make 3 to 6 slides maximum, depending on the complexity of the request.\n\n"
+            "Available Slide Types:\n"
+            "- title: Presentation title slide.\n"
+            "- kpi_dashboard: High-level numerical summary cards/metrics.\n"
+            "- chart: A visual chart representation.\n"
+            "- table: A structured data table.\n"
+            "- insights: Analytical insights and breakdown.\n"
+            "- recommendation: Actionable next steps.\n"
+            "- conclusion: Summary and closing thoughts.\n\n"
+            "Return a valid JSON matching this schema:\n"
+            "{\n"
+            '  "presentation_title": "Custom title fitting user request",\n'
+            '  "presentation_subtitle": "Custom subtitle",\n'
+            '  "presentation_style": "executive | analytical | modern",\n'
+            '  "slides": [\n'
+            '    {\n'
+            '      "slide_title": "...",\n'
+            '      "slide_type": "title | kpi_dashboard | chart | table | insights | recommendation | conclusion",\n'
+            '      "key_points": ["...", "..."],\n'
+            '      "insights": "Optional string or null",\n'
+            '      "recommended_chart": "Chart key or null",\n'
+            '      "priority": 1\n'
+            '    }\n'
+            '  ]\n'
+            "}"
+        )
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"User Request: {prompt}\n\nAvailable Data Summary:\n{data_summary}"},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.2,
+            )
+
+            raw_content = response.choices[0].message.content
+            if not raw_content:
+                logger.warning("[Groq] Empty response received from Groq LLM for PPT plan.")
+                return None
+
+            payload = PresentationPlan.model_validate_json(raw_content)
+            logger.info(f"[Groq] PPT Plan generated and validated (slides={len(payload.slides)})")
+            return payload
+
+        except Exception as exc:
+            logger.error(f"[Groq] PPT planning API error or validation failure: {exc}")
+            return None
+
+    def generate_pdf_plan(self, prompt: str, data_summary: str) -> Optional[ReportPlan]:
+        """
+        Sends report planning prompt to Groq LLM and returns validated ReportPlan.
+        Returns None if Groq is unconfigured, disabled, or returns invalid plan.
+        """
+        if not self.client:
+            logger.info("[Groq] API unavailable or unconfigured; returning None for fallback.")
+            return None
+
+        logger.info(f"[Groq] Generating PDF plan for prompt: '{prompt[:40]}...'")
+
+        system_prompt = (
+            "You are an expert Report Planner for AgentCampus.\n"
+            "Your job is to analyze the user's request and the available data summary to create a structured PDF report plan.\n\n"
+            "You do NOT write python code. You only produce a structured JSON plan.\n\n"
+            "STRICT RULES:\n"
+            "1. NO FIXED OR GENERIC SECTIONS. Never automatically generate generic sections like 'Executive Summary', 'Introduction', 'Key Statistics', 'CGPA Distribution', 'Department Performance', generic conclusions, or generic recommendations unless they are directly relevant to the user request.\n"
+            "2. DYNAMIC CONTENT: The title, sections, charts, tables, insights, recommendations, and layout must be completely custom-tailored to the user query and the available data.\n"
+            "3. If the user asks about risk/probation, focus the entire report structure around risk analysis, at-risk students, and risk-related recommendations. Do not include unrelated department/academic statistics.\n"
+            "4. For sections of type 'table': if the data summary lists specific tables (e.g. 'at_risk_students'), set the 'content' field to that specific table name. If not, set it to 'all_records' or null.\n"
+            "5. For sections of type 'chart': if the data summary lists specific charts (e.g. 'risk_pie', 'group_bar'), specify it in 'recommended_chart'. Otherwise, use 'cgpa_distribution', 'department_performance', or null.\n\n"
+            "Available Section Types:\n"
+            "- summary: A text block summarizing context.\n"
+            "- statistics: Key metrics and KPI list.\n"
+            "- chart: A visual chart.\n"
+            "- table: A detailed data table.\n"
+            "- insights: Analytical insights.\n"
+            "- recommendations: Actionable advice.\n\n"
+            "Return a valid JSON matching this schema:\n"
+            "{\n"
+            '  "report_title": "Custom title fitting user request",\n'
+            '  "report_type": "Custom report type description",\n'
+            '  "executive_summary": "Tailored executive summary or null",\n'
+            '  "sections": [\n'
+            '    {\n'
+            '      "title": "Descriptive section title",\n'
+            '      "type": "summary | statistics | table | chart | insights | recommendations",\n'
+            '      "content": "Specific table/chart name or text content or null",\n'
+            '      "data_priority": "e.g., high, medium, low",\n'
+            '      "recommended_chart": "Chart key or null"\n'
+            '    }\n'
+            '  ]\n'
+            "}"
+        )
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"User Request: {prompt}\n\nAvailable Data Summary:\n{data_summary}"},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.2,
+            )
+
+            raw_content = response.choices[0].message.content
+            if not raw_content:
+                logger.warning("[Groq] Empty response received from Groq LLM for PDF plan.")
+                return None
+
+            payload = ReportPlan.model_validate_json(raw_content)
+            logger.info(f"[Groq] PDF Plan generated and validated (sections={len(payload.sections)})")
+            return payload
+
+        except Exception as exc:
+            logger.error(f"[Groq] PDF planning API error or validation failure: {exc}")
+            return None
+
+    def generate_text_report(self, prompt: str, data_summary: str) -> Optional[str]:
+        """
+        Sends text report generation prompt to Groq LLM and returns formatted text.
+        Returns None if Groq is unconfigured, disabled, or encounters an error.
+        """
+        if not self.client:
+            logger.info("[Groq] API unavailable or unconfigured; returning None for fallback.")
+            return None
+
+        logger.info(f"[Groq] Generating text report for prompt: '{prompt[:40]}...'")
+
+        system_prompt = (
+            "You are an expert Text Output Formatter for AgentCampus.\n"
+            "Your job is to analyze the user's request and the available data summary to create a natural, well-organized text response.\n\n"
+            "STRICT RULES:\n"
+            "1. ONLY use information provided in the Available Data Summary.\n"
+            "2. DO NOT hallucinate or invent student records, names, or statistics.\n"
+            "3. If information is missing, clearly state that it is unavailable.\n"
+            "4. Follow the user's requested style (e.g., detailed report, quick summary, ranked list).\n"
+            "5. Keep the answer concise unless the user explicitly requests a detailed report.\n"
+            "6. Output in clean Markdown format.\n"
+            "7. Do NOT include JSON, and do NOT write Python code.\n"
+            "8. Improve wording, structure, readability, and provide clear insights based ONLY on the data."
+        )
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"User Request: {prompt}\n\nAvailable Data Summary:\n{data_summary}"},
+                ],
+                temperature=0.2,
+            )
+
+            raw_content = response.choices[0].message.content
+            if not raw_content:
+                logger.warning("[Groq] Empty response received from Groq LLM for text report.")
+                return None
+
+            logger.info("[Groq] Text report generated successfully.")
+            return raw_content.strip()
+
+        except Exception as exc:
+            logger.error(f"[Groq] Text generation API error: {exc}")
             return None
 
     def extract_data_from_image(self, image_path: str, query: Optional[str] = None) -> Optional[dict]:

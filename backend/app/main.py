@@ -7,7 +7,7 @@ load_dotenv()
 
 from fastapi import FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
-from app.api import health, students, orchestrate
+from app.api import health, students, orchestrate, database, files
 
 logger = logging.getLogger(__name__)
 logger.info(f"[AgentCampus] Startup — GROQ_API_KEY configured: {bool(os.getenv('GROQ_API_KEY'))}")
@@ -32,5 +32,8 @@ api_router = APIRouter(prefix="/api")
 api_router.include_router(health.router)
 api_router.include_router(students.router)
 api_router.include_router(orchestrate.router)
+api_router.include_router(database.router)
+api_router.include_router(files.router)
 
 app.include_router(api_router)
+

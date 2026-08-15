@@ -74,12 +74,60 @@ class DBAgent(BaseAgent):
 
         # Main Vault DB Agent flow (Supabase live DB via vault_llm_plan and execute_plan)
         plan = vault_llm_plan(task.input_data)
+        action = plan.get("action", "")
+        table = plan.get("table", "students")
+        params = plan.get("params", {})
+        confirmed = bool(task.input_data.get("confirmed"))
+
+        # Dangerous / destructive operations safety confirmation check
+        is_destructive = (
+            action == "drop_column"
+            or (action == "delete_row" and (not params.get("row_id") or "filters" in params))
+            or (action == "bulk_update" and params.get("filters"))
+        )
+
+        if is_destructive and not confirmed:
+            from app.db.generic_mutations import estimate_affected_rows
+            affected_count = estimate_affected_rows(table, action, params)
+            filters = params.get("filters", [])
+            cond_parts = [f"{f.get('field')} {f.get('op')} {f.get('value')}" for f in filters]
+            condition_str = " AND ".join(cond_parts) if cond_parts else "ALL RECORDS"
+            op_name = action.replace("_row", "")
+
+            sql_repr = _format_sql_from_plan(plan)
+            return AgentResult(
+                task_id=task.task_id,
+                agent=self.name,
+                status="completed",
+                result={
+                    "requires_confirmation": True,
+                    "operation": op_name,
+                    "target_table": table,
+                    "condition": condition_str,
+                    "affected_records": affected_count,
+                    "message": f"This operation will modify/delete {affected_count} record(s) in '{table}'.",
+                    "warning": "Destructive operation requires explicit confirmation.",
+                    "sql": sql_repr,
+                    "records": [],
+                    "count": 0,
+                    "plan": plan,
+                },
+            )
+
         exec_res = execute_plan(plan)
 
         if exec_res.get("success"):
             data = exec_res.get("data")
             records = data if isinstance(data, list) else ([data] if data else [])
             sql_repr = _format_sql_from_plan(plan)
+
+            # Invalidate schema cache so preview is never stale
+            from app.db.schema_registry import invalidate_schema_cache
+            invalidate_schema_cache()
+
+            # Ensure in-memory fallback is also synced for live refresh
+            if action in ("update_row", "insert_row", "delete_row", "bulk_update") and table == "students":
+                self._sync_in_memory_mutation(action, plan, params)
 
             return AgentResult(
                 task_id=task.task_id,
@@ -91,11 +139,75 @@ class DBAgent(BaseAgent):
                     "count": len(records),
                     "plan": plan,
                     "message": exec_res.get("message"),
+                    "requires_confirmation": False,
                 },
             )
 
         # Fallback to legacy dispatch if dynamic execution was not successful
         return self._legacy_dispatch(task, structured_intent)
+
+    def _sync_in_memory_mutation(self, action: str, plan: dict, params: dict) -> None:
+        try:
+            from app.services.student_service import student_service
+            students = student_service._fallback_students
+            if action == "update_row":
+                row_id = params.get("row_id") or params.get("rowId") or params.get("id")
+                data = params.get("data", {})
+                for idx, s in enumerate(students):
+                    if (s.id == row_id or s.roll_number == row_id or 
+                        (s.name and row_id and row_id.lower() in s.name.lower())):
+                        s_dict = s.model_dump(by_alias=True)
+                        s_dict.update(data)
+                        students[idx] = StudentRecord.model_validate(s_dict)
+                        break
+            elif action == "insert_row":
+                data = params.get("data", {})
+                if data:
+                    data.setdefault("id", f"STU-{len(students)+1001}")
+                    data.setdefault("rollNumber", f"21CS{len(students)+100:03d}")
+                    data.setdefault("department", "Computer Science")
+                    data.setdefault("cgpa", 8.0)
+                    data.setdefault("status", "Active")
+                    students.append(StudentRecord.model_validate(data))
+            elif action == "delete_row":
+                row_id = params.get("row_id")
+                filters = params.get("filters", [])
+                if row_id:
+                    student_service._fallback_students = [
+                        s for s in students if s.id != row_id and s.roll_number != row_id and (not s.name or row_id.lower() not in s.name.lower())
+                    ]
+                elif filters:
+                    filtered = []
+                    for s in students:
+                        s_dict = s.model_dump(by_alias=True)
+                        match = True
+                        for f in filters:
+                            fld = f.get("field")
+                            op = f.get("op", "eq")
+                            val = f.get("value")
+                            actual = s_dict.get(fld, getattr(s, fld, None))
+                            if actual is None:
+                                match = False
+                                break
+                            try:
+                                if op == "eq" and str(actual).lower() != str(val).lower():
+                                    match = False
+                                elif op == "lt" and not (float(actual) < float(val)):
+                                    match = False
+                                elif op == "lte" and not (float(actual) <= float(val)):
+                                    match = False
+                                elif op == "gt" and not (float(actual) > float(val)):
+                                    match = False
+                                elif op == "gte" and not (float(actual) >= float(val)):
+                                    match = False
+                            except Exception:
+                                match = False
+                        if not match:
+                            filtered.append(s)
+                    student_service._fallback_students = filtered
+        except Exception as exc:
+            logger.debug(f"[DBAgent] _sync_in_memory_mutation ignored: {exc}")
+
 
     def _execute_file_parsed_flow(self, task: AgentTask, structured_intent: dict, parsed_records: list) -> AgentResult:
         """File-parsed records filtering flow from InputAgent."""
