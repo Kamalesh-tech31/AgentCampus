@@ -1,8 +1,39 @@
 import time
 from queue import Queue as ThreadQueue
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Generic, TypeVar
 from pydantic import BaseModel, Field
-from crewai.flow.flow import Flow, start, listen
+
+T = TypeVar("T")
+
+
+try:
+    from crewai.flow.flow import Flow, start, listen
+except ImportError:
+    class Flow(Generic[T]):  # type: ignore
+        def __init__(self, **kwargs):
+            if not hasattr(self, "state") or self.state is None:
+                self.state = FlowState()
+
+        def kickoff(self):
+            if hasattr(self, "execute_input_step"):
+                self.execute_input_step()
+            if hasattr(self, "execute_db_step"):
+                self.execute_db_step()
+            if hasattr(self, "execute_analytics_step"):
+                self.execute_analytics_step()
+            if hasattr(self, "execute_output_step"):
+                self.execute_output_step()
+
+    def start():
+        def decorator(fn):
+            return fn
+        return decorator
+
+    def listen(other_fn):
+        def decorator(fn):
+            return fn
+        return decorator
+
 from app.mother.state import WorkflowState
 from app.agents.registry import AgentRegistry
 from app.mother.task_manager import TaskManager
@@ -54,7 +85,7 @@ class AgentCampusFlow(Flow[FlowState]):
         task = self.task_manager.create_task(
             agent="input",
             objective="Understand user query",
-            input_data={"user_query": wf.user_query},
+            input_data={"user_query": wf.user_query, "mode": wf.mode, "confirmed": wf.confirmed},
             expected_output="Structured query intent",
         )
         agent = self.registry.get("input")
@@ -102,9 +133,10 @@ class AgentCampusFlow(Flow[FlowState]):
         task = self.task_manager.create_task(
             agent="db",
             objective="Execute SQL query on campus database",
-            input_data={"user_query": wf.user_query, **self.state.step_results},
+            input_data={"user_query": wf.user_query, "mode": wf.mode, "confirmed": wf.confirmed, **self.state.step_results},
             expected_output="Database records",
         )
+
         agent = self.registry.get("db")
         result = agent.execute(task)
 
@@ -151,7 +183,7 @@ class AgentCampusFlow(Flow[FlowState]):
         task = self.task_manager.create_task(
             agent="analytics",
             objective="Compute statistical metrics",
-            input_data={"user_query": wf.user_query, **self.state.step_results},
+            input_data={"user_query": wf.user_query, "mode": wf.mode, "confirmed": wf.confirmed, **self.state.step_results},
             expected_output="Analytics metrics",
         )
         agent = self.registry.get("analytics")
@@ -199,9 +231,10 @@ class AgentCampusFlow(Flow[FlowState]):
         task = self.task_manager.create_task(
             agent="output",
             objective="Format summary table and response payload",
-            input_data={"user_query": wf.user_query, **self.state.step_results},
+            input_data={"user_query": wf.user_query, "mode": wf.mode, "confirmed": wf.confirmed, **self.state.step_results},
             expected_output="Formatted response payload",
         )
+
         agent = self.registry.get("output")
         result = agent.execute(task)
 

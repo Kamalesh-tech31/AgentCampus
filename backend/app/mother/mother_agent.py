@@ -11,11 +11,14 @@ from app.contracts import (
     PlanStep,
     OrchestrationEvent,
     OrchestrationResult,
+    StudentRecord,
+    OrchestrationMetrics,
     DynamicPlanRequestType,
     AgentStatus,
     ActivityLog,
     AgentType,
 )
+
 
 if TYPE_CHECKING:
     from app.agents.registry import AgentRegistry
@@ -50,9 +53,22 @@ class MotherAgent:
             "metrics",
             "percentile",
             "analytics",
+            "analyze",
+            "analysis",
             "distribution",
             "statistic",
+            "statistics",
+            "stats",
             "breakdown",
+            "at risk",
+            "at-risk",
+            "risk",
+            "probation",
+            "performance",
+            "compare",
+            "correlation",
+            "outlier",
+            "standard deviation",
         ]
         if any(kw in prompt_lower for kw in analytics_keywords):
             return "analytics"
@@ -86,8 +102,13 @@ class MotherAgent:
         if "db" not in completed_agents:
             return "db"
 
+        plan_agents = [s.agent for s in workflow.plan.steps] if workflow.plan else []
+        requires_analytics = (
+            "analytics" in plan_agents or workflow.request_type == "analytics"
+        )
+
         if (
-            workflow.request_type == "analytics"
+            requires_analytics
             and "analytics" not in completed_agents
         ):
             return "analytics"
@@ -96,6 +117,7 @@ class MotherAgent:
             return "output"
 
         return None
+
 
     def synthesize_plan(self, workflow: WorkflowState) -> DynamicPlan:
         """
@@ -191,12 +213,46 @@ class MotherAgent:
             steps=steps,
         )
 
-    def create_workflow(self, prompt: str) -> WorkflowState:
+    def create_workflow(
+        self,
+        prompt: str,
+        mode: Optional[str] = None,
+        confirmed: bool = False,
+    ) -> WorkflowState:
         workflow_id = f"WF-{uuid.uuid4().hex[:6].upper()}"
-        request_type = self.classify_intent(prompt)
+
+        # Resolve mode & request_type
+        if mode:
+            mode_clean = str(mode).lower().strip()
+            if mode_clean in ("modify", "write", "mutation"):
+                resolved_mode = "modify"
+                request_type = "write"
+            elif mode_clean in ("explore", "read", "view", "query"):
+                resolved_mode = "explore"
+                request_type = "read"
+            elif mode_clean in ("analyze", "analytics", "report", "pulse"):
+                resolved_mode = "analyze"
+                request_type = "analytics"
+            else:
+                request_type = self.classify_intent(prompt)
+                resolved_mode = (
+                    "modify"
+                    if request_type == "write"
+                    else ("analyze" if request_type == "analytics" else "explore")
+                )
+        else:
+            request_type = self.classify_intent(prompt)
+            resolved_mode = (
+                "modify"
+                if request_type == "write"
+                else ("analyze" if request_type == "analytics" else "explore")
+            )
+
         workflow = WorkflowState(
             workflow_id=workflow_id,
             user_query=prompt,
+            mode=resolved_mode,
+            confirmed=confirmed,
             request_type=request_type,
             status="planning",
         )
@@ -208,7 +264,7 @@ class MotherAgent:
                 type="TASK_CREATED",
                 task_id=workflow_id,
                 timestamp=time.time(),
-                message=f"Created task: {prompt}",
+                message=f"Created task [{resolved_mode} mode]: {prompt}",
             )
         )
         workflow.events.append(
@@ -242,15 +298,66 @@ class MotherAgent:
                 workflow.status = "completed"
 
                 output_result = workflow.results.get("output", {})
-                summary_text = output_result.get(
-                    "summary", f"Successfully executed {workflow.request_type} query"
+                result_dict = output_result.get("result", {}) if isinstance(output_result, dict) else {}
+
+                summary_text = (
+                    result_dict.get("summary")
+                    or (output_result.get("summary") if isinstance(output_result, dict) else None)
+                    or f"Successfully executed {workflow.request_type} query"
                 )
+                query_executed = (
+                    result_dict.get("queryExecuted")
+                    or workflow.results.get("input", {}).get("sql")
+                    or workflow.results.get("db", {}).get("sql")
+                )
+                output_format = (
+                    output_result.get("output_format")
+                    or result_dict.get("outputFormat")
+                    or result_dict.get("output_format")
+                )
+                output_file = (
+                    output_result.get("output_file")
+                    or result_dict.get("outputFile")
+                    or result_dict.get("output_file")
+                )
+
+                data_raw = result_dict.get("data") or workflow.results.get("db", {}).get("records")
+                data = (
+                    [StudentRecord.model_validate(r) for r in data_raw]
+                    if (isinstance(data_raw, list) and data_raw and isinstance(data_raw[0], dict))
+                    else None
+                )
+
+                metrics_raw = result_dict.get("metrics") or workflow.results.get("analytics", {}).get("metrics")
+                metrics = (
+                    OrchestrationMetrics.model_validate(metrics_raw)
+                    if (isinstance(metrics_raw, dict) and metrics_raw)
+                    else None
+                )
+
+                db_res = workflow.results.get("db", {})
+                req_confirm = bool(db_res.get("requires_confirmation")) if isinstance(db_res, dict) else False
+                confirm_details = db_res if req_confirm else None
+
+                exec_summary = {
+                    "agents": [
+                        {"agent": t.agent, "status": t.status}
+                        for t in workflow.task_history
+                    ]
+                }
 
                 final_res = OrchestrationResult(
                     summary=summary_text,
-                    query_executed=workflow.results.get("input", {}).get("sql")
-                    or workflow.results.get("db", {}).get("sql"),
+                    query_executed=query_executed,
                     raw_plan=workflow.plan,
+                    output_format=output_format or "text",
+                    output_file=output_file,
+                    data=data,
+                    metrics=metrics,
+                    mode=workflow.mode,
+                    requires_confirmation=req_confirm,
+                    confirmation_details=confirm_details,
+                    execution=exec_summary,
                 )
                 workflow.final_result = final_res
 
@@ -282,10 +389,16 @@ class MotherAgent:
             task = self.task_manager.create_task(
                 agent=next_agent,
                 objective=f"Execute {next_agent} task for workflow {workflow.workflow_id}",
-                input_data={"user_query": workflow.user_query, **workflow.results},
+                input_data={
+                    "user_query": workflow.user_query,
+                    "mode": workflow.mode,
+                    "confirmed": workflow.confirmed,
+                    **workflow.results,
+                },
                 expected_output=f"Completed {next_agent} task",
             )
             workflow.current_task = task
+
 
             # Emit AGENT_STARTED
             workflow.events.append(

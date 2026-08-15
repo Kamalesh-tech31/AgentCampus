@@ -67,6 +67,28 @@ def _build_final_result(workflow: WorkflowState) -> OrchestrationResult:
             steps=updated_steps,
         )
 
+    output_format = (
+        output_raw.get("output_format")
+        or result_dict.get("outputFormat")
+        or result_dict.get("output_format")
+    )
+    output_file = (
+        output_raw.get("output_file")
+        or result_dict.get("outputFile")
+        or result_dict.get("output_file")
+    )
+
+    db_res = workflow.results.get("db", {})
+    req_confirm = bool(db_res.get("requires_confirmation")) if isinstance(db_res, dict) else False
+    confirm_details = db_res if req_confirm else None
+
+    exec_summary = {
+        "agents": [
+            {"agent": t.agent, "status": t.status}
+            for t in workflow.task_history
+        ]
+    }
+
     return OrchestrationResult(
         summary=summary,
         query_executed=query_executed,
@@ -74,7 +96,15 @@ def _build_final_result(workflow: WorkflowState) -> OrchestrationResult:
         data=data,
         metrics=metrics,
         raw_plan=workflow.plan,
+        output_format=output_format or "text",
+        output_file=output_file,
+        mode=workflow.mode,
+        requires_confirmation=req_confirm,
+        confirmation_details=confirm_details,
+        execution=exec_summary,
     )
+
+
 
 
 class CrewAdapter:

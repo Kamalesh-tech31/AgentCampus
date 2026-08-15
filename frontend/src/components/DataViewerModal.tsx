@@ -15,7 +15,7 @@ export const DataViewerModal: React.FC<DataViewerModalProps> = ({
   onClose,
   students,
   sqlQuery,
-  onExportCsv
+  onExportCsv,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedDept, setSelectedDept] = useState('All');
@@ -27,12 +27,12 @@ export const DataViewerModal: React.FC<DataViewerModalProps> = ({
 
   const departments = ['All', 'Computer Science', 'Electronics', 'Mechanical', 'Civil', 'Data Science', 'AI & ML'];
 
-  let filtered = students.filter(s => {
+  let filtered = students.filter((s) => {
     const matchesDept = selectedDept === 'All' || s.department === selectedDept;
-    const matchesSearch = 
-      s.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      s.rollNumber.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      s.email.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesSearch =
+      (s.name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (s.rollNumber || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (s.email || '').toLowerCase().includes(searchTerm.toLowerCase());
     return matchesDept && matchesSearch;
   });
 
@@ -46,7 +46,7 @@ export const DataViewerModal: React.FC<DataViewerModalProps> = ({
 
   const handleSort = (field: keyof StudentRecord) => {
     if (sortField === field) {
-      setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc');
+      setSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'));
     } else {
       setSortField(field);
       setSortOrder('desc');
@@ -54,53 +54,55 @@ export const DataViewerModal: React.FC<DataViewerModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-gray-900/40 backdrop-blur-xs flex items-center justify-center p-4">
-      <div className="bg-white border border-gray-200 rounded-2xl w-full max-w-5xl h-[85vh] flex flex-col shadow-xl overflow-hidden font-sans">
+    <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-5xl h-[85vh] flex flex-col shadow-2xl overflow-hidden font-sans">
         {/* Modal Header */}
-        <div className="p-4 bg-white border-b border-gray-200 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="p-2 rounded-lg bg-blue-50 border border-blue-200 text-blue-600">
-              <Database className="w-4 h-4" />
+        <div className="p-4 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between shrink-0">
+          <div className="flex items-center gap-3">
+            <div className="p-2 rounded-xl bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 text-blue-600 dark:text-blue-400">
+              <Database className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-sm font-semibold text-gray-900">Campus Student Database</h2>
-              <p className="text-xs text-gray-500">
+              <h2 className="text-sm font-bold text-slate-900 dark:text-slate-100">
+                Retrieved Dataset Viewer
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
                 Showing {filtered.length} of {students.length} student records
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
-            <div className="flex items-center bg-gray-100 rounded-lg p-0.5 border border-gray-200 text-xs">
+            <div className="flex items-center bg-slate-100 dark:bg-slate-800 rounded-xl p-0.5 border border-slate-200 dark:border-slate-700 text-xs">
               <button
                 onClick={() => setActiveTab('table')}
-                className={`px-3 py-1 rounded-md transition-all cursor-pointer font-medium ${
-                  activeTab === 'table' ? 'bg-white text-blue-600 shadow-xs' : 'text-gray-600 hover:text-gray-900'
+                className={`px-3 py-1 rounded-lg transition-all cursor-pointer font-medium ${
+                  activeTab === 'table' ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-xs' : 'text-slate-600 dark:text-slate-400'
                 }`}
               >
                 Data Grid
               </button>
               <button
                 onClick={() => setActiveTab('sql')}
-                className={`px-3 py-1 rounded-md transition-all cursor-pointer font-medium ${
-                  activeTab === 'sql' ? 'bg-white text-blue-600 shadow-xs' : 'text-gray-600 hover:text-gray-900'
+                className={`px-3 py-1 rounded-lg transition-all cursor-pointer font-medium ${
+                  activeTab === 'sql' ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-xs' : 'text-slate-600 dark:text-slate-400'
                 }`}
               >
-                SQL Query
+                SQL Trace
               </button>
             </div>
 
             <button
               onClick={onExportCsv}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 border border-gray-200 rounded-lg text-xs font-medium text-gray-700 transition-all cursor-pointer"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-200 transition-all cursor-pointer shadow-xs active:scale-95"
             >
               <Download className="w-3.5 h-3.5" />
-              <span>Export CSV</span>
+              <span>Export CSV / Excel</span>
             </button>
 
             <button
               onClick={onClose}
-              className="p-1.5 text-gray-400 hover:text-gray-700 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer"
+              className="p-1.5 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
             >
               <X className="w-5 h-5" />
             </button>
@@ -109,95 +111,103 @@ export const DataViewerModal: React.FC<DataViewerModalProps> = ({
 
         {/* Filters Bar */}
         {activeTab === 'table' && (
-          <div className="p-3 bg-gray-50/50 border-b border-gray-200 flex flex-wrap items-center justify-between gap-3 text-xs">
-            {/* Search input */}
-            <div className="relative flex-1 min-w-[200px]">
-              <Search className="w-3.5 h-3.5 text-gray-400 absolute left-2.5 top-2.5" />
+          <div className="p-3 bg-slate-50 dark:bg-slate-800/40 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3 shrink-0 text-xs">
+            <div className="relative flex-1 min-w-[200px] max-w-sm">
+              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
               <input
                 type="text"
-                placeholder="Search student name, roll number, or email..."
+                placeholder="Search by name, roll number, email..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full bg-white border border-gray-200 rounded-lg pl-8 pr-3 py-1.5 text-xs text-gray-900 focus:outline-none focus:ring-1 focus:ring-blue-600"
+                className="w-full pl-9 pr-3 py-1.5 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-xs text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:border-blue-600 dark:focus:border-blue-500 shadow-xs"
               />
             </div>
 
-            {/* Department Filter */}
-            <div className="flex items-center gap-1 overflow-x-auto pb-1 max-w-full custom-scrollbar">
-              {departments.map((dept) => (
-                <button
-                  key={dept}
-                  onClick={() => setSelectedDept(dept)}
-                  className={`px-2.5 py-1 rounded-lg text-[11px] whitespace-nowrap transition-all cursor-pointer font-medium ${
-                    selectedDept === dept
-                      ? 'bg-blue-50 text-blue-600 border border-blue-200'
-                      : 'bg-white text-gray-600 border border-gray-200 hover:text-gray-900'
-                  }`}
-                >
-                  {dept}
-                </button>
-              ))}
+            <div className="flex items-center gap-2">
+              <span className="text-slate-500 dark:text-slate-400 font-medium">Department:</span>
+              <select
+                value={selectedDept}
+                onChange={(e) => setSelectedDept(e.target.value)}
+                className="bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-1.5 text-xs text-slate-900 dark:text-slate-100 focus:outline-none focus:border-blue-600 dark:focus:border-blue-500 shadow-xs"
+              >
+                {departments.map((d) => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
         )}
 
-        {/* Modal Body */}
-        <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
+        {/* Modal Content */}
+        <div className="flex-1 overflow-auto p-4 custom-scrollbar">
           {activeTab === 'table' ? (
-            <div className="overflow-x-auto">
+            <div className="rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden bg-white dark:bg-slate-800/30">
               <table className="w-full text-left text-xs border-collapse">
-                <thead>
-                  <tr className="border-b border-gray-200 bg-gray-50 text-gray-500 text-[11px] font-semibold">
-                    <th className="p-2.5 cursor-pointer hover:text-gray-800" onClick={() => handleSort('rollNumber')}>
-                      <div className="flex items-center gap-1">Roll No <ArrowUpDown className="w-3 h-3" /></div>
+                <thead className="sticky top-0 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-semibold border-b border-slate-200 dark:border-slate-700 z-10">
+                  <tr>
+                    <th onClick={() => handleSort('rollNumber')} className="px-3.5 py-2.5 font-mono cursor-pointer hover:text-blue-600">
+                      <div className="flex items-center gap-1">
+                        <span>Roll No</span>
+                        <ArrowUpDown className="w-3 h-3 text-slate-400" />
+                      </div>
                     </th>
-                    <th className="p-2.5 cursor-pointer hover:text-gray-800" onClick={() => handleSort('name')}>
-                      <div className="flex items-center gap-1">Name <ArrowUpDown className="w-3 h-3" /></div>
+                    <th onClick={() => handleSort('name')} className="px-3.5 py-2.5 cursor-pointer hover:text-blue-600">
+                      <div className="flex items-center gap-1">
+                        <span>Name</span>
+                        <ArrowUpDown className="w-3 h-3 text-slate-400" />
+                      </div>
                     </th>
-                    <th className="p-2.5 cursor-pointer hover:text-gray-800" onClick={() => handleSort('department')}>
-                      <div className="flex items-center gap-1">Department <ArrowUpDown className="w-3 h-3" /></div>
+                    <th onClick={() => handleSort('department')} className="px-3.5 py-2.5 cursor-pointer hover:text-blue-600">
+                      <div className="flex items-center gap-1">
+                        <span>Department</span>
+                        <ArrowUpDown className="w-3 h-3 text-slate-400" />
+                      </div>
                     </th>
-                    <th className="p-2.5 cursor-pointer hover:text-gray-800" onClick={() => handleSort('cgpa')}>
-                      <div className="flex items-center gap-1">CGPA <ArrowUpDown className="w-3 h-3" /></div>
+                    <th onClick={() => handleSort('cgpa')} className="px-3.5 py-2.5 cursor-pointer hover:text-blue-600">
+                      <div className="flex items-center gap-1">
+                        <span>CGPA</span>
+                        <ArrowUpDown className="w-3 h-3 text-slate-400" />
+                      </div>
                     </th>
-                    <th className="p-2.5 cursor-pointer hover:text-gray-800" onClick={() => handleSort('attendance')}>
-                      <div className="flex items-center gap-1">Attendance <ArrowUpDown className="w-3 h-3" /></div>
+                    <th onClick={() => handleSort('attendance')} className="px-3.5 py-2.5 cursor-pointer hover:text-blue-600">
+                      <div className="flex items-center gap-1">
+                        <span>Attendance</span>
+                        <ArrowUpDown className="w-3 h-3 text-slate-400" />
+                      </div>
                     </th>
-                    <th className="p-2.5 cursor-pointer hover:text-gray-800" onClick={() => handleSort('status')}>
-                      <div className="flex items-center gap-1">Status <ArrowUpDown className="w-3 h-3" /></div>
-                    </th>
-                    <th className="p-2.5">Email</th>
+                    <th className="px-3.5 py-2.5">Status</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-100">
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-800 dark:text-slate-200">
                   {filtered.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="p-8 text-center text-gray-400">
-                        No students match the selected search or filter criteria.
+                      <td colSpan={6} className="p-8 text-center text-slate-400">
+                        No students match the current search or filters.
                       </td>
                     </tr>
                   ) : (
                     filtered.map((s) => (
-                      <tr key={s.id} className="hover:bg-gray-50/80 transition-colors">
-                        <td className="p-2.5 font-semibold text-gray-800">{s.rollNumber}</td>
-                        <td className="p-2.5 font-semibold text-gray-900">{s.name}</td>
-                        <td className="p-2.5 text-gray-600">{s.department}</td>
-                        <td className="p-2.5 font-semibold text-blue-600">{s.cgpa.toFixed(2)}</td>
-                        <td className="p-2.5">
-                          <span className={s.attendance < 75 ? 'text-red-600 font-semibold' : 'text-gray-700'}>
-                            {s.attendance}%
-                          </span>
-                        </td>
-                        <td className="p-2.5">
-                          <span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
-                            s.status === 'Active' ? 'bg-blue-50 text-blue-600 border border-blue-200' :
-                            s.status === 'Probation' ? 'bg-red-50 text-red-600 border border-red-200' :
-                            'bg-gray-100 text-gray-700 border border-gray-200'
-                          }`}>
+                      <tr key={s.id || s.rollNumber} className="hover:bg-blue-50/40 dark:hover:bg-slate-700/30 transition-colors">
+                        <td className="px-3.5 py-2.5 font-mono text-[11px] text-slate-600 dark:text-slate-400">{s.rollNumber}</td>
+                        <td className="px-3.5 py-2.5 font-semibold text-slate-900 dark:text-slate-100">{s.name}</td>
+                        <td className="px-3.5 py-2.5">{s.department}</td>
+                        <td className="px-3.5 py-2.5 font-bold text-blue-600 dark:text-blue-400">{Number(s.cgpa).toFixed(2)}</td>
+                        <td className="px-3.5 py-2.5">{s.attendance}%</td>
+                        <td className="px-3.5 py-2.5">
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${
+                              s.status === 'Active'
+                                ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300'
+                                : s.status === 'Probation'
+                                ? 'bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-300'
+                                : 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-300'
+                            }`}
+                          >
                             {s.status}
                           </span>
                         </td>
-                        <td className="p-2.5 text-gray-400 text-[11px]">{s.email}</td>
                       </tr>
                     ))
                   )}
@@ -205,21 +215,22 @@ export const DataViewerModal: React.FC<DataViewerModalProps> = ({
               </table>
             </div>
           ) : (
-            <div className="space-y-4">
-              <div>
-                <div className="text-xs font-semibold text-gray-700 mb-2 flex items-center gap-1.5">
-                  <Code className="w-4 h-4 text-blue-600" />
-                  <span>Executed SQL Query</span>
-                </div>
-                <pre className="p-4 bg-gray-50 border border-gray-200 rounded-xl text-blue-600 text-xs font-mono overflow-x-auto leading-relaxed">
-                  {sqlQuery || 'SELECT * FROM students ORDER BY cgpa DESC;'}
-                </pre>
-              </div>
+            <div className="p-4 bg-slate-900 rounded-xl border border-slate-800 font-mono text-xs text-emerald-400 overflow-x-auto">
+              <pre>{sqlQuery || '-- No custom SQL execution trace recorded for this query.'}</pre>
             </div>
           )}
+        </div>
+
+        {/* Footer */}
+        <div className="p-4 bg-slate-50 dark:bg-slate-800/80 border-t border-slate-200 dark:border-slate-800 flex items-center justify-end shrink-0">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-xl transition-all shadow-xs cursor-pointer"
+          >
+            Close Viewer
+          </button>
         </div>
       </div>
     </div>
   );
 };
-

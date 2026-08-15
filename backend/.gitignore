@@ -27,3 +27,6 @@ htmlcov/
 
 # Interactive test script
 test_interactive.py
+
+# Generated output files
+output_files/

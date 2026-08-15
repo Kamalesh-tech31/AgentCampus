@@ -1,3 +1,7 @@
+export type AppMode = 'modify' | 'explore' | 'analyze';
+
+export type OutputFormat = 'text' | 'excel' | 'pdf' | 'ppt';
+
 export type AgentStatus = 'waiting' | 'running' | 'complete' | 'failed';
 
 export type AgentType = 'input' | 'mother' | 'db' | 'analytics' | 'output';
@@ -59,22 +63,65 @@ export interface StudentRecord {
   id: string;
   rollNumber: string;
   name: string;
-  department: 'Computer Science' | 'Electronics' | 'Mechanical' | 'Civil' | 'Data Science' | 'AI & ML';
+  department: string;
   cgpa: number;
   semester: number;
-  attendance: number; // percentage 0-100
+  attendance: number;
   email: string;
-  status: 'Active' | 'Probation' | 'Graduated';
+  status: string;
   backlogs: number;
   projectTitle?: string;
+  [key: string]: any;
+}
+
+export interface TableColumnInfo {
+  name: string;
+  type: string;
+}
+
+export interface DatabaseTablePreview {
+  name: string;
+  columns: TableColumnInfo[];
+  sampleRecords: Record<string, any>[];
+  rowCount: number;
+}
+
+export interface DatabasePreviewResponse {
+  tables: DatabaseTablePreview[];
+}
+
+export interface ConfirmationDetails {
+  operation?: string;
+  target_table?: string;
+  condition?: string;
+  affected_records?: number;
+  message?: string;
+  warning?: string;
+  sql?: string;
+  plan?: any;
+  [key: string]: any;
+}
+
+export interface ExecutionAgentSummary {
+  agent: string;
+  status: string;
+  durationMs?: number;
+  error?: string;
+}
+
+export interface ExecutionSummary {
+  agents: ExecutionAgentSummary[];
+  totalDurationMs?: number;
+  requiresConfirmation?: boolean;
 }
 
 export interface OrchestrationResult {
+  mode?: AppMode;
   summary: string;
   queryExecuted?: string;
   mutationExecuted?: string;
   affectedCount?: number;
-  data?: StudentRecord[];
+  data?: any[];
   metrics?: {
     totalRecords?: number;
     averageCgpa?: number;
@@ -83,14 +130,20 @@ export interface OrchestrationResult {
     avgAttendance?: number;
     probationCount?: number;
     departmentBreakdown?: Record<string, { count: number; avgCgpa: number }>;
+    [key: string]: any;
   };
-  csvData?: string;
+  outputFormat?: OutputFormat | string;
+  outputFile?: string;
+  requiresConfirmation?: boolean;
+  confirmationDetails?: ConfirmationDetails;
+  execution?: ExecutionSummary;
   rawPlan?: DynamicPlan;
   structuredIntent?: any;
+  csvData?: string;
 }
 
 export interface OrchestrationEvent {
-  type: 
+  type:
     | 'TASK_CREATED'
     | 'AGENT_STARTED'
     | 'AGENT_WORKING'
@@ -113,6 +166,8 @@ export interface Turn {
   id: string;
   timestamp: string;
   prompt: string;
+  mode: AppMode;
+  outputFormat?: OutputFormat;
   status: AgentStatus;
   agents: Record<AgentType, AgentState>;
   plan?: DynamicPlan;
@@ -124,17 +179,16 @@ export interface Turn {
 export interface ChatThread {
   id: string;
   title: string;
+  mode: AppMode;
   createdAt: string;
   updatedAt: string;
   turns: Turn[];
 }
 
-export interface HistoryItem {
-  id: string;
-  timestamp: string;
-  prompt: string;
-  planTitle: string;
-  status: AgentStatus;
-  resultSummary?: string;
-  structuredIntent?: any;
+export interface ColumnValidationResult {
+  table: string;
+  column: string;
+  valid: boolean;
+  resolvedColumn?: string;
+  suggestion?: string;
 }

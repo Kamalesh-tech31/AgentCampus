@@ -254,18 +254,31 @@ def _build_initial_students() -> List[StudentRecord]:
 
 
 class StudentService:
-    """Supabase-backed Student Service storing student records."""
+    """Supabase-backed Student Service storing student records with in-memory offline fallback."""
+
+    def __init__(self):
+        self._fallback_students = _build_initial_students()
 
     def get_students(self) -> List[StudentRecord]:
-        raw_students = get_all_students()
-        return [StudentRecord.model_validate(s) for s in raw_students]
+        try:
+            raw_students = get_all_students()
+            if raw_students:
+                return [StudentRecord.model_validate(s) for s in raw_students]
+        except Exception:
+            pass
+        return self._fallback_students
 
     def reset_db(self) -> List[StudentRecord]:
-        delete_all_students()
-        initial_students = _build_initial_students()
-        records_to_insert = [s.model_dump(by_alias=True) for s in initial_students]
-        bulk_insert_students(records_to_insert)
-        return self.get_students()
+        try:
+            delete_all_students()
+            initial_students = _build_initial_students()
+            records_to_insert = [s.model_dump(by_alias=True) for s in initial_students]
+            bulk_insert_students(records_to_insert)
+            return self.get_students()
+        except Exception:
+            self._fallback_students = _build_initial_students()
+            return self._fallback_students
 
 
 student_service = StudentService()
+

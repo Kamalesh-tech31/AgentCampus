@@ -40,6 +40,9 @@ class OrchestrationMetrics(CamelModel):
     department_breakdown: Optional[Dict[str, DepartmentMetric]] = None
 
 
+UserMode = Literal["modify", "explore", "analyze"]
+
+
 class OrchestrationResult(CamelModel):
     summary: str
     query_executed: Optional[str] = None
@@ -50,6 +53,15 @@ class OrchestrationResult(CamelModel):
     csv_data: Optional[str] = None
     raw_plan: Optional[DynamicPlan] = None
     structured_intent: Optional[Any] = None
+    # Scribe output metadata — additive, backward-compatible
+    output_format: Optional[str] = None   # "text" | "excel" | "pdf" | "pptx"
+    output_file: Optional[str] = None     # absolute file path when format is file-based
+    # 3-Mode & confirmation extensions
+    mode: Optional[str] = None            # "modify" | "explore" | "analyze"
+    requires_confirmation: Optional[bool] = False
+    confirmation_details: Optional[Dict[str, Any]] = None
+    execution: Optional[Dict[str, Any]] = None
+
 
 
 OrchestrationEventType = Literal[
@@ -107,4 +119,11 @@ class HistoryItem(CamelModel):
 
 
 class OrchestrationRequest(CamelModel):
-    prompt: str
+    prompt: Optional[str] = None
+    user_query: Optional[str] = None
+    mode: Optional[str] = None          # "modify" | "explore" | "analyze"
+    confirmed: Optional[bool] = False   # Confirmation flag for destructive mutations
+
+    def get_query(self) -> str:
+        return self.user_query or self.prompt or ""
+

@@ -38,9 +38,16 @@ def _deterministic_fallback_plan(lens_output: Dict[str, Any]) -> Dict[str, Any]:
     Constructs deterministic plan from structured input dictionary.
     """
     action = lens_output.get("action")
-    query = str(lens_output.get("query", "")).lower()
+    query = str(
+        lens_output.get("query")
+        or lens_output.get("user_query")
+        or lens_output.get("prompt")
+        or (lens_output.get("input", {}).get("user_query") if isinstance(lens_output.get("input"), dict) else "")
+        or ""
+    ).lower()
     tbl = lens_output.get("table", "students")
     params = lens_output.get("params", {})
+
 
     cols = get_table_columns(tbl)
     numeric_fields = [k for k, v in cols.items() if str(v).lower() in ("numeric", "int", "integer", "float", "number") or k in ("cgpa", "attendance", "credits", "semester", "backlogs")]
@@ -87,6 +94,51 @@ def _deterministic_fallback_plan(lens_output: Dict[str, Any]) -> Dict[str, Any]:
     elif action == "delete" or action == "delete_row":
         row_id = lens_output.get("row_id") or lens_output.get("rowId") or lens_output.get("id") or params.get("row_id") or params.get("rowId") or params.get("id")
         return {"action": "delete_row", "table": tbl, "params": {"row_id": row_id}}
+
+    # Natural language update patterns (e.g., "Change Rahul's CGPA to 9.2", "set CGPA of STU-1001 to 9.5")
+    if "change" in query or "update" in query or "set" in query or "modify" in query:
+        import re
+        m_cgpa = re.search(r'cgpa\s*(?:to|as|=)?\s*(\d+(?:\.\d+)?)', query, re.IGNORECASE) or re.search(r'to\s*(\d+(?:\.\d+)?)\s*cgpa', query, re.IGNORECASE)
+        val = float(m_cgpa.group(1)) if m_cgpa else None
+
+        target_name = None
+        for name in ("rahul", "aarav", "ananya", "rohan", "priya", "devansh", "diya", "siddharth", "kavya", "aditya", "neha", "vikram"):
+            if name in query:
+                target_name = name
+                break
+
+        m_stu_id = re.search(r'\b(STU-\d+)\b', query, re.IGNORECASE)
+        m_roll_id = re.search(r'\b(21[A-Z]{2}\d{3})\b', query, re.IGNORECASE)
+        target_id = (m_stu_id.group(1).upper() if m_stu_id else None) or (m_roll_id.group(1).upper() if m_roll_id else target_name)
+
+        if val is not None and target_id:
+            return {
+                "action": "update_row",
+                "table": "students",
+                "params": {"row_id": target_id, "data": {"cgpa": val}}
+            }
+
+    # Natural language delete patterns (e.g., "Delete all students with CGPA below 5", "delete STU-1001")
+    if "delete" in query or "remove" in query or "drop students" in query:
+        import re
+        m_below = re.search(r'(?:below|under|<|less than)\s*(\d+(?:\.\d+)?)', query, re.IGNORECASE)
+        if m_below and ("cgpa" in query or "gpa" in query or "score" in query or "mark" in query):
+            val = float(m_below.group(1))
+            return {
+                "action": "delete_row",
+                "table": "students",
+                "params": {"filters": [{"field": "cgpa", "op": "lt", "value": val}]}
+            }
+        m_stu_id = re.search(r'\b(STU-\d+)\b', query, re.IGNORECASE)
+        m_roll_id = re.search(r'\b(21[A-Z]{2}\d{3})\b', query, re.IGNORECASE)
+        target_id = (m_stu_id.group(1).upper() if m_stu_id else None) or (m_roll_id.group(1).upper() if m_roll_id else None)
+        if target_id:
+            return {
+                "action": "delete_row",
+                "table": "students",
+                "params": {"row_id": target_id}
+            }
+
     elif action == "restore" or action == "restore_row" or action == "revert" or action == "revert_row" or "restore" in query or "revert" in query or "undo" in query:
         row_id = lens_output.get("row_id") or lens_output.get("rowId") or lens_output.get("id") or params.get("row_id") or params.get("rowId") or params.get("id")
         return {"action": "restore_row", "table": tbl, "params": {"row_id": row_id}}

@@ -7,57 +7,90 @@ import {
   FileCheck, 
   CheckCircle2, 
   AlertCircle, 
-  Clock,
+  Clock, 
   ChevronDown, 
   ChevronUp, 
-  Code,
-  Sparkles,
-  ArrowUpRight
+  Sparkles, 
+  ArrowRight,
+  Compass,
+  LineChart,
+  Code
 } from 'lucide-react';
-import { AgentState, AgentType, Turn } from '../types';
+import { AgentState, AgentType, Turn, AppMode } from '../types';
 
 interface CenterPanelProps {
   turns: Turn[];
   selectedTurnId?: string;
   onSelectTurn: (turnId: string) => void;
   isExecuting: boolean;
+  currentMode: AppMode;
   onOpenJsonModal: (title: string, data: any) => void;
-  onSelectPreset?: (prompt: string) => void;
+  onSelectPreset: (prompt: string) => void;
 }
 
-const PRESET_PROMPTS = [
-  { label: 'Top 10 CS Students', prompt: 'Show top 10 Computer Science students ordered by CGPA with high attendance' },
-  { label: 'Mechanical Dept Avg', prompt: 'Calculate average CGPA and score metrics for the Mechanical department' },
-  { label: 'Update Rahul CGPA to 9.5', prompt: "Update Rahul Sharma's CGPA to 9.5 and recalculate Computer Science average" },
-  { label: 'Low Attendance (<75%)', prompt: 'Find all students with attendance below 75% and show probation list' },
-  { label: 'Add New Student', prompt: 'Add new student Ananya Roy with 8.9 CGPA in Electronics department' }
-];
-
-const AGENT_CONFIG: Record<AgentType, { name: string; role: string; icon: any }> = {
+const AGENT_CONFIG: Record<AgentType, { name: string; role: string; icon: any; color: string }> = {
   input: {
     name: 'Input Agent',
-    role: 'Parsing natural language intent',
-    icon: Bot
+    role: 'Parsing intent & entities',
+    icon: Bot,
+    color: 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/60 border-blue-200 dark:border-blue-800'
   },
   mother: {
     name: 'Mother Agent',
-    role: 'Orchestrating execution plan',
-    icon: Cpu
+    role: 'Synthesizing dynamic workflow',
+    icon: Cpu,
+    color: 'text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-950/60 border-purple-200 dark:border-purple-800'
   },
   db: {
     name: 'DB Agent',
-    role: 'Executing database queries',
-    icon: Database
+    role: 'Querying / mutating database',
+    icon: Database,
+    color: 'text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/60 border-amber-200 dark:border-amber-800'
   },
   analytics: {
-    name: 'Analytics Agent',
+    name: 'Pulse Analytics',
     role: 'Calculating statistical metrics',
-    icon: BarChart3
+    icon: BarChart3,
+    color: 'text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/60 border-indigo-200 dark:border-indigo-800'
   },
   output: {
-    name: 'Output Agent',
-    role: 'Formatting tables and summary',
-    icon: FileCheck
+    name: 'Scribe Output',
+    role: 'Formatting tables and reports',
+    icon: FileCheck,
+    color: 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60 border-emerald-200 dark:border-emerald-800'
+  }
+};
+
+const MODE_WELCOME_PROMPTS: Record<AppMode, { title: string; subtitle: string; prompts: string[] }> = {
+  modify: {
+    title: 'Modify Database Mode',
+    subtitle: 'Enter a mutation request to safely update or delete records.',
+    prompts: [
+      "Change Rahul's CGPA to 9.2",
+      "Update Arun's attendance to 95%",
+      "Delete all students with CGPA below 5",
+      "Add new student Ananya Roy in Computer Science with 9.1 CGPA"
+    ]
+  },
+  explore: {
+    title: 'Explore Database Mode',
+    subtitle: 'Search and inspect database records without altering data.',
+    prompts: [
+      "Show the top 10 CSE students",
+      "Find all students with CGPA above 9.0",
+      "List all students in Electronics with attendance below 75%",
+      "Show all active students ordered by roll number"
+    ]
+  },
+  analyze: {
+    title: 'Analyze & Report Mode',
+    subtitle: 'Request deep analytics, rankings, comparisons, and exportable reports.',
+    prompts: [
+      "Rank the top 10 students using 80% marks and 20% LeetCode count",
+      "Find academically at-risk students and explain reasons",
+      "Compare Computer Science and Electronics department performance",
+      "Analyze attendance correlation with CGPA and create a detailed report in PDF"
+    ]
   }
 };
 
@@ -66,19 +99,17 @@ export const CenterPanel: React.FC<CenterPanelProps> = ({
   selectedTurnId,
   onSelectTurn,
   isExecuting,
+  currentMode,
   onOpenJsonModal,
-  onSelectPreset
+  onSelectPreset,
 }) => {
   const [expandedAgentCards, setExpandedAgentCards] = useState<Record<string, boolean>>({});
-  const [collapsedFlows, setCollapsedFlows] = useState<Record<string, boolean>>({});
   const chatBottomRef = useRef<HTMLDivElement>(null);
 
   const toggleAgentCard = (cardKey: string, e: React.MouseEvent) => {
     e.stopPropagation();
     setExpandedAgentCards(prev => ({ ...prev, [cardKey]: !prev[cardKey] }));
   };
-
-  const agentOrder: AgentType[] = ['input', 'mother', 'db', 'analytics', 'output'];
 
   // Auto-scroll to bottom on new turn or when executing
   useEffect(() => {
@@ -87,43 +118,28 @@ export const CenterPanel: React.FC<CenterPanelProps> = ({
     }
   }, [turns.length, isExecuting]);
 
-  const handleTurnClick = (turnId: string) => {
-    onSelectTurn(turnId);
-    // Uncollapse flow when selecting
-    setCollapsedFlows(prev => ({ ...prev, [turnId]: false }));
-  };
-
-  const handleToggleFlow = (turnId: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    setCollapsedFlows(prev => {
-      const currentlyCollapsed = !!prev[turnId];
-      if (currentlyCollapsed) {
-        onSelectTurn(turnId);
-      }
-      return { ...prev, [turnId]: !currentlyCollapsed };
-    });
-  };
+  const welcome = MODE_WELCOME_PROMPTS[currentMode] || MODE_WELCOME_PROMPTS.explore;
 
   return (
-    <div className="flex-1 h-full bg-slate-50 flex flex-col min-w-0 overflow-hidden select-none">
+    <div className="flex-1 h-full bg-slate-50 dark:bg-slate-900 flex flex-col min-w-0 overflow-hidden select-none transition-colors">
       {/* Top Header Banner */}
-      <div className="p-3.5 border-b border-gray-200 bg-white flex items-center justify-between shrink-0 h-14">
+      <div className="p-3.5 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex items-center justify-between shrink-0 h-14">
         <div className="flex items-center gap-2.5 min-w-0">
-          <div className="p-1.5 rounded-lg bg-blue-50 border border-blue-200 text-blue-600 shrink-0">
+          <div className="p-1.5 rounded-lg bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 text-blue-600 dark:text-blue-400 shrink-0">
             <Cpu className="w-4 h-4" />
           </div>
           <div className="min-w-0">
-            <h2 className="text-xs font-semibold text-gray-900 truncate">
-              Execution Thread
+            <h2 className="text-xs font-bold text-slate-900 dark:text-slate-100 truncate">
+              Execution Timeline
             </h2>
-            <p className="text-[11px] text-gray-500 truncate mt-0.5">
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
               {turns.length} {turns.length === 1 ? 'request' : 'requests'} in this session
             </p>
           </div>
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
-          <span className="text-[11px] font-medium text-gray-500 bg-gray-100 px-2.5 py-0.5 rounded-full border border-gray-200">
+          <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 px-2.5 py-0.5 rounded-full border border-slate-200 dark:border-slate-700">
             {turns.length} Turns
           </span>
         </div>
@@ -133,283 +149,161 @@ export const CenterPanel: React.FC<CenterPanelProps> = ({
       {turns.length === 0 ? (
         <div className="flex-1 overflow-y-auto p-6 flex flex-col items-center justify-center custom-scrollbar">
           <div className="max-w-lg w-full space-y-6 text-center">
-            <div className="w-12 h-12 rounded-2xl bg-blue-50 border border-blue-200 text-blue-600 flex items-center justify-center mx-auto shadow-xs">
+            <div className="w-12 h-12 rounded-2xl bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 text-blue-600 dark:text-blue-400 flex items-center justify-center mx-auto shadow-xs">
               <Sparkles className="w-6 h-6" />
             </div>
 
             <div>
-              <h2 className="text-base font-semibold text-gray-900">
-                What would you like to query?
+              <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
+                {welcome.title}
               </h2>
-              <p className="text-xs text-gray-500 mt-1">
-                Select a sample prompt below or type your custom query in the bottom bar.
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                {welcome.subtitle}
               </p>
             </div>
 
             <div className="space-y-2 text-left">
-              {PRESET_PROMPTS.map((item, idx) => (
+              {welcome.prompts.map((promptText, idx) => (
                 <button
                   key={idx}
-                  onClick={() => onSelectPreset?.(item.prompt)}
-                  disabled={isExecuting}
-                  className="w-full text-left p-3.5 rounded-xl bg-white hover:bg-blue-50/60 border border-gray-200 hover:border-blue-300 transition-all cursor-pointer group shadow-xs flex items-center justify-between active:scale-[0.99]"
+                  onClick={() => onSelectPreset(promptText)}
+                  className="w-full text-left p-3 rounded-xl bg-white dark:bg-slate-800/80 hover:bg-blue-50/70 dark:hover:bg-slate-700/80 border border-slate-200 dark:border-slate-700 hover:border-blue-300 dark:hover:border-blue-600 transition-all flex items-center justify-between text-xs font-medium text-slate-700 dark:text-slate-200 group shadow-xs cursor-pointer"
                 >
-                  <div className="min-w-0 pr-3">
-                    <span className="text-xs font-semibold text-gray-800 group-hover:text-blue-600 transition-colors block truncate">
-                      {item.label}
-                    </span>
-                    <span className="text-[11px] text-gray-500 truncate block mt-0.5">
-                      {item.prompt}
-                    </span>
-                  </div>
-                  <ArrowUpRight className="w-4 h-4 text-gray-400 group-hover:text-blue-600 shrink-0 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
+                  <span className="truncate pr-3">"{promptText}"</span>
+                  <ArrowRight className="w-3.5 h-3.5 text-slate-400 group-hover:text-blue-600 dark:group-hover:text-blue-400 shrink-0 transition-transform group-hover:translate-x-1" />
                 </button>
               ))}
             </div>
           </div>
         </div>
       ) : (
-        /* Continuous Chat Thread */
-        <div className="flex-1 overflow-y-auto p-4 lg:p-6 space-y-6 custom-scrollbar">
-          <div className="max-w-3xl mx-auto space-y-6">
-            {turns.map((turn) => {
-              const isSelected = selectedTurnId === turn.id;
-              const isTurnCollapsed = !!collapsedFlows[turn.id];
-              const isExpanded = isSelected && !isTurnCollapsed;
+        <div className="flex-1 overflow-y-auto p-4 space-y-6 custom-scrollbar">
+          {turns.map((turn, turnIdx) => {
+            const isSelected = selectedTurnId === turn.id;
+            const turnAgents = Object.values(turn.agents).filter((a) => {
+              // Only render analytics agent if it actually ran or in analyze mode
+              if (a.id === 'analytics') {
+                return turn.mode === 'analyze' || a.status !== 'waiting';
+              }
+              return true;
+            });
 
-              const isTurnComplete = turn.status === 'complete';
-              const isTurnRunning = turn.status === 'running';
-              const isTurnFailed = turn.status === 'failed';
-
-              return (
-                <div key={turn.id} className="space-y-3">
-                  {/* User Request Bubble */}
-                  <div className="flex justify-end">
-                    <div
-                      onClick={() => handleTurnClick(turn.id)}
-                      className={`px-4 py-2.5 rounded-2xl rounded-tr-xs text-xs font-medium max-w-[85%] cursor-pointer transition-all ${
-                        isSelected
-                          ? 'bg-blue-600 text-white shadow-sm ring-2 ring-blue-300'
-                          : 'bg-blue-600/90 text-white hover:bg-blue-600 shadow-xs'
-                      }`}
-                    >
-                      {turn.prompt}
-                    </div>
+            return (
+              <div
+                key={turn.id}
+                onClick={() => onSelectTurn(turn.id)}
+                className={`p-4 rounded-2xl border transition-all cursor-pointer ${
+                  isSelected
+                    ? 'bg-white dark:bg-slate-800/90 border-blue-400 dark:border-blue-500 shadow-md ring-1 ring-blue-100 dark:ring-blue-900/40'
+                    : 'bg-white/60 dark:bg-slate-800/40 border-slate-200 dark:border-slate-700/80 hover:border-slate-300 dark:hover:border-slate-600 shadow-xs'
+                }`}
+              >
+                {/* Turn Header */}
+                <div className="flex items-center justify-between gap-3 pb-3 border-b border-slate-100 dark:border-slate-700/80">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <span className="w-6 h-6 rounded-full bg-blue-600 text-white flex items-center justify-center text-[11px] font-bold shrink-0">
+                      {turnIdx + 1}
+                    </span>
+                    <span className="text-xs font-bold text-slate-900 dark:text-slate-100 truncate">
+                      "{turn.prompt}"
+                    </span>
                   </div>
 
-                  {/* Foldable Execution Flow Block */}
-                  <div
-                    className={`rounded-2xl border transition-all bg-white overflow-hidden ${
-                      isSelected
-                        ? 'border-blue-400 ring-2 ring-blue-500/15 shadow-sm'
-                        : 'border-gray-200 hover:border-gray-300 shadow-xs'
-                    }`}
-                  >
-                    {!isExpanded ? (
-                      /* Collapsed 1-Line Execution Flow Summary */
-                      <div 
-                        onClick={() => handleTurnClick(turn.id)}
-                        className="p-3 flex items-center justify-between text-xs hover:bg-gray-50/80 transition-colors cursor-pointer"
-                      >
-                        <div className="flex items-center gap-2 min-w-0 pr-2">
-                          {isTurnComplete && <CheckCircle2 className="w-4 h-4 text-blue-600 shrink-0" />}
-                          {isTurnRunning && <Clock className="w-4 h-4 text-blue-600 animate-spin shrink-0" />}
-                          {isTurnFailed && <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />}
-
-                          <span className="text-gray-800 font-semibold truncate">
-                            Execution Flow
-                          </span>
-                          <span className="text-gray-300">•</span>
-                          <span className="text-gray-600 font-medium shrink-0">
-                            {turn.durationMs ? `${(turn.durationMs / 1000).toFixed(2)}s` : isTurnRunning ? 'Running...' : 'Completed'}
-                          </span>
-                          <span className="text-gray-300 hidden sm:inline">•</span>
-                          <span className="text-gray-500 text-[11px] hidden sm:inline truncate">
-                            5 agents {isTurnRunning ? 'in progress' : isTurnFailed ? 'failed' : 'completed'}
-                          </span>
-                        </div>
-
-                        <button
-                          type="button"
-                          onClick={(e) => handleToggleFlow(turn.id, e)}
-                          className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-200/70 text-gray-500 hover:text-gray-800 transition-colors shrink-0 cursor-pointer"
-                          title="Expand Execution Flow"
-                        >
-                          <ChevronDown className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ) : (
-                      /* Expanded Full Execution Stepper */
-                      <div>
-                        {/* Header Bar */}
-                        <div className="p-3 bg-gray-50/90 border-b border-gray-200 flex items-center justify-between">
-                          <div className="flex items-center gap-2 min-w-0 pr-2">
-                            <Cpu className="w-4 h-4 text-blue-600 shrink-0" />
-                            <span className="text-xs font-semibold text-gray-900 truncate">
-                              Execution Flow
-                            </span>
-                            {turn.durationMs && (
-                              <span className="text-[11px] font-medium text-gray-500 bg-white px-2 py-0.5 rounded-full border border-gray-200 shrink-0">
-                                {(turn.durationMs / 1000).toFixed(2)}s
-                              </span>
-                            )}
-                            <span className="text-[11px] text-gray-500 hidden sm:inline truncate">
-                              • 5 agents {isTurnRunning ? 'in progress' : isTurnFailed ? 'failed' : 'completed'}
-                            </span>
-                          </div>
-
-                          <button
-                            type="button"
-                            onClick={(e) => handleToggleFlow(turn.id, e)}
-                            className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-200/80 text-gray-500 hover:text-gray-800 transition-colors shrink-0 cursor-pointer"
-                            title="Collapse Execution Flow"
-                          >
-                            <ChevronUp className="w-4 h-4" />
-                          </button>
-                        </div>
-
-                        {/* Stepper Content */}
-                        <div className="p-4 space-y-0">
-                          {agentOrder.map((agentId, index) => {
-                            const agentState = turn.agents[agentId];
-                            const config = AGENT_CONFIG[agentId];
-                            const IconComponent = config.icon;
-
-                            const cardKey = `${turn.id}-${agentId}`;
-                            const isAgentExpanded = !!expandedAgentCards[cardKey];
-                            const isWaiting = agentState.status === 'waiting';
-                            const isRunning = agentState.status === 'running';
-                            const isComplete = agentState.status === 'complete';
-                            const isFailed = agentState.status === 'failed';
-
-                            return (
-                              <div key={agentId} className="relative pl-6 pb-5 last:pb-0">
-                                {/* Vertical Line */}
-                                {index < agentOrder.length - 1 && (
-                                  <div
-                                    className={`absolute left-[11px] top-5 bottom-0 w-0.5 transition-colors ${
-                                      isComplete ? 'bg-blue-600' : 'bg-gray-200'
-                                    }`}
-                                  />
-                                )}
-
-                                {/* Step Node Dot */}
-                                <div className="absolute left-0 top-3 -translate-y-1/2 flex items-center justify-center">
-                                  {isWaiting && (
-                                    <div className="w-5 h-5 rounded-full bg-white border-2 border-gray-300 flex items-center justify-center">
-                                      <div className="w-1.5 h-1.5 rounded-full bg-gray-300" />
-                                    </div>
-                                  )}
-                                  {isRunning && (
-                                    <div className="relative w-5 h-5 flex items-center justify-center">
-                                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-                                      <span className="relative inline-flex rounded-full h-3.5 w-3.5 bg-blue-600" />
-                                    </div>
-                                  )}
-                                  {isComplete && (
-                                    <div className="w-5 h-5 rounded-full bg-blue-600 text-white flex items-center justify-center">
-                                      <CheckCircle2 className="w-3.5 h-3.5" />
-                                    </div>
-                                  )}
-                                  {isFailed && (
-                                    <div className="w-5 h-5 rounded-full bg-red-600 text-white flex items-center justify-center">
-                                      <AlertCircle className="w-3.5 h-3.5" />
-                                    </div>
-                                  )}
-                                </div>
-
-                                {/* Agent Card */}
-                                <div
-                                  className={`ml-2 bg-white rounded-xl border transition-all ${
-                                    isRunning
-                                      ? 'border-blue-400 ring-2 ring-blue-100 shadow-xs'
-                                      : isComplete
-                                      ? 'border-gray-200 hover:border-gray-300'
-                                      : isFailed
-                                      ? 'border-red-300 bg-red-50/20'
-                                      : 'border-gray-200 opacity-60'
-                                  }`}
-                                >
-                                  {/* Agent Header */}
-                                  <div
-                                    onClick={(e) => toggleAgentCard(cardKey, e)}
-                                    className="p-3 flex items-center justify-between cursor-pointer hover:bg-gray-50/80 rounded-xl transition-colors"
-                                  >
-                                    <div className="flex items-center gap-3 min-w-0">
-                                      <div className={`p-1.5 rounded-lg ${isComplete || isRunning ? 'bg-blue-50 text-blue-600' : 'bg-gray-100 text-gray-500'}`}>
-                                        <IconComponent className="w-3.5 h-3.5" />
-                                      </div>
-                                      <div className="min-w-0">
-                                        <h3 className="text-xs font-semibold text-gray-900">
-                                          {config.name}
-                                        </h3>
-                                        <p className="text-[11px] text-gray-500 truncate mt-0.5">
-                                          {agentState.statusMessage || config.role}
-                                        </p>
-                                      </div>
-                                    </div>
-
-                                    <div className="flex items-center gap-2 shrink-0">
-                                      {agentState.durationMs && (
-                                        <span className="text-[10px] font-medium text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full border border-gray-200">
-                                          {(agentState.durationMs / 1000).toFixed(2)}s
-                                        </span>
-                                      )}
-                                      <button
-                                        type="button"
-                                        className="p-1 text-gray-400 hover:text-gray-600 rounded-md transition-colors"
-                                      >
-                                        {isAgentExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                                      </button>
-                                    </div>
-                                  </div>
-
-                                  {/* Agent Details */}
-                                  {isAgentExpanded && (
-                                    <div className="p-3 border-t border-gray-100 bg-gray-50/50 rounded-b-xl space-y-2">
-                                      {(agentState.inputData || agentState.outputData) && (
-                                        <div className="flex items-center justify-between">
-                                          <span className="text-[11px] font-medium text-gray-600">Payload Details</span>
-                                          <button
-                                            onClick={(e) => {
-                                              e.stopPropagation();
-                                              onOpenJsonModal(`${config.name} Data`, agentState.outputData || agentState.inputData);
-                                            }}
-                                            className="flex items-center gap-1 text-[11px] font-medium text-blue-600 hover:text-blue-700 cursor-pointer"
-                                          >
-                                            <Code className="w-3 h-3" />
-                                            <span>View JSON</span>
-                                          </button>
-                                        </div>
-                                      )}
-
-                                      {agentState.logs.length > 0 && (
-                                        <div className="space-y-1 pt-1">
-                                          <span className="text-[11px] font-medium text-gray-500 block">Activity Summary:</span>
-                                          <div className="bg-white p-2 rounded-lg border border-gray-200 text-xs text-gray-700 space-y-1 font-mono">
-                                            {agentState.logs.map((log) => (
-                                              <div key={log.id} className="leading-relaxed">
-                                                • {log.message}
-                                              </div>
-                                            ))}
-                                          </div>
-                                        </div>
-                                      )}
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="text-[10px] font-semibold uppercase px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300">
+                      {turn.mode}
+                    </span>
+                    <span className="text-[11px] text-slate-400">
+                      {turn.timestamp}
+                    </span>
                   </div>
                 </div>
-              );
-            })}
-            <div ref={chatBottomRef} />
-          </div>
+
+                {/* Agents Timeline Sequence */}
+                <div className="pt-3 space-y-2.5">
+                  {turnAgents.map((agent) => {
+                    const cfg = AGENT_CONFIG[agent.id] || AGENT_CONFIG.input;
+                    const Icon = cfg.icon;
+                    const isDone = agent.status === 'complete';
+                    const isRunning = agent.status === 'running';
+                    const isFailed = agent.status === 'failed';
+                    const cardKey = `${turn.id}-${agent.id}`;
+                    const isExpanded = !!expandedAgentCards[cardKey];
+
+                    return (
+                      <div
+                        key={agent.id}
+                        className={`rounded-xl border transition-all overflow-hidden ${
+                          isRunning
+                            ? 'border-blue-400 dark:border-blue-500 bg-blue-50/20 dark:bg-blue-950/20 shadow-xs'
+                            : isDone
+                            ? 'border-slate-200 dark:border-slate-700/80 bg-slate-50/50 dark:bg-slate-800/40'
+                            : isFailed
+                            ? 'border-rose-300 dark:border-rose-800 bg-rose-50/20'
+                            : 'border-slate-200 dark:border-slate-700/40 opacity-50'
+                        }`}
+                      >
+                        {/* Agent Card Header */}
+                        <div
+                          onClick={(e) => toggleAgentCard(cardKey, e)}
+                          className="p-2.5 flex items-center justify-between cursor-pointer hover:bg-slate-100/50 dark:hover:bg-slate-700/40 transition-colors"
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div className={`p-1.5 rounded-lg border ${cfg.color} shrink-0`}>
+                              <Icon className="w-3.5 h-3.5" />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-bold text-slate-900 dark:text-slate-100 truncate">
+                                  {cfg.name}
+                                </span>
+                                <span className="text-[10px] text-slate-400 font-mono hidden sm:inline">
+                                  {agent.badge}
+                                </span>
+                              </div>
+                              <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                                {agent.statusMessage || cfg.role}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0">
+                            {isDone && <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />}
+                            {isRunning && <Clock className="w-4 h-4 text-blue-600 dark:text-blue-400 animate-spin" />}
+                            {isFailed && <AlertCircle className="w-4 h-4 text-rose-600" />}
+                            {agent.logs.length > 0 && (
+                              <span className="text-slate-400">
+                                {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Expandable Agent Logs & Payload */}
+                        {isExpanded && agent.logs.length > 0 && (
+                          <div className="p-3 bg-slate-900 text-slate-200 border-t border-slate-800 text-[11px] font-mono space-y-1.5 max-h-48 overflow-y-auto custom-scrollbar">
+                            {agent.logs.map((log) => (
+                              <div key={log.id} className="flex items-start gap-2">
+                                <span className="text-slate-500 shrink-0">[{log.timestamp}]</span>
+                                <span className={
+                                  log.level === 'error' ? 'text-rose-400' :
+                                  log.level === 'success' ? 'text-emerald-400' :
+                                  log.level === 'working' ? 'text-blue-400' : 'text-slate-300'
+                                }>
+                                  {log.message}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+          <div ref={chatBottomRef} />
         </div>
       )}
     </div>
