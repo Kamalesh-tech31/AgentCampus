@@ -1,7 +1,7 @@
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Tuple
 from app.db.client import supabase
 from app.db.schema_registry import get_known_fields, get_live_schema
-from app.db.generic_queries import generic_filter, generic_get_all, compute_filter, generic_weighted_compute, ALLOWED_OPERATORS
+from app.db.generic_queries import generic_filter, generic_get_all, compute_filter, generic_weighted_compute, generic_join_query, ALLOWED_OPERATORS
 from app.db.generic_mutations import (
     generic_insert,
     generic_update,
@@ -16,6 +16,7 @@ from app.db.generic_mutations import (
 ALLOWED_ACTIONS = {
     "filter_rows",
     "get_all_rows",
+    "join_query",
     "insert_row",
     "update_row",
     "delete_row",
@@ -29,6 +30,50 @@ ALLOWED_ACTIONS = {
     "weighted_compute",
     "bulk_update",
 }
+
+
+def _parse_sort_params(params: Dict[str, Any], default_field: str = "id") -> Optional[Tuple[str, bool]]:
+    """
+    Parses sorting configuration from query parameters.
+    Handles:
+      - params["sort"] = "asc" / "desc"
+      - params["sort"] = "field_name asc" / "field_name desc" / "field_name"
+      - params["sort"] = {"field": "...", "direction" | "order": "asc"|"desc"}
+      - params["sort_field"] = "...", params["sort_dir"] | params["order"] = "..."
+      - params["order"] = "asc" | "desc"
+    Returns (sort_field, is_desc) or None.
+    """
+    sort = params.get("sort")
+    sort_field = params.get("sort_field")
+    order = params.get("order") or params.get("sort_dir")
+
+    if isinstance(sort, dict):
+        f = sort.get("field") or sort_field or default_field
+        d = str(sort.get("direction") or sort.get("order") or order or "desc").lower()
+        return (f, d == "desc")
+
+    if isinstance(sort, str):
+        parts = sort.strip().split()
+        if len(parts) == 1:
+            val = parts[0].lower()
+            if val in ("asc", "desc"):
+                return (sort_field or default_field, val == "desc")
+            else:
+                d = str(order or "asc").lower()
+                return (parts[0], d == "desc")
+        elif len(parts) >= 2:
+            f = parts[0]
+            d = parts[1].lower()
+            return (f, d == "desc")
+
+    if sort_field:
+        d = str(order or "asc").lower()
+        return (sort_field, d == "desc")
+
+    if order:
+        return (default_field, str(order).lower() == "desc")
+
+    return None
 
 
 def execute_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
@@ -87,24 +132,48 @@ def execute_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
 
         if action == "get_all_rows":
             limit = params.get("limit")
-            records, truncated, total = generic_get_all(table, limit=limit)
+            fields = params.get("fields") or params.get("select") or params.get("columns")
+            select_clause = "*"
+            if fields and isinstance(fields, list):
+                valid_cols = [f for f in fields if f in known_fields]
+                if valid_cols:
+                    select_clause = ", ".join(valid_cols)
+            elif isinstance(fields, str) and fields.strip() in known_fields:
+                select_clause = fields.strip()
+
+            query = supabase.table(table).select(select_clause, count="exact")
+            sort_info = _parse_sort_params(params)
+            if sort_info:
+                sort_field, is_desc = sort_info
+                if sort_field in known_fields:
+                    query = query.order(sort_field, desc=is_desc)
+            if limit is not None:
+                query = query.limit(limit)
+            res = query.execute()
+            records = res.data or []
+            total = res.count if res.count is not None else len(records)
+            truncated = (total > len(records))
             msg = f"Fetched {len(records)} rows from {table}." if not truncated else f"Fetched {len(records)} rows from {table} (total: {total}, truncated: true)."
             return {"success": True, "data": records, "truncated": truncated, "total": total, "message": msg}
 
         elif action == "filter_rows":
             limit = params.get("limit")
             filters = params.get("filters", [])
+            fields = params.get("fields") or params.get("select") or params.get("columns")
 
             # Support single filter param format
             if not filters and "field" in params:
                 filters = [{"field": params["field"], "op": params.get("op", "eq"), "value": params.get("value")}]
 
-            if not filters:
-                records, truncated, total = generic_get_all(table, limit=limit)
-                msg = f"No filters provided; fetched {len(records)} rows from {table}." if not truncated else f"No filters provided; fetched {len(records)} rows from {table} (total: {total}, truncated: true)."
-                return {"success": True, "data": records, "truncated": truncated, "total": total, "message": msg}
+            select_clause = "*"
+            if fields and isinstance(fields, list):
+                valid_cols = [f for f in fields if f in known_fields]
+                if valid_cols:
+                    select_clause = ", ".join(valid_cols)
+            elif isinstance(fields, str) and fields.strip() in known_fields:
+                select_clause = fields.strip()
 
-            query = supabase.table(table).select("*", count="exact")
+            query = supabase.table(table).select(select_clause, count="exact")
             for f in filters:
                 field = f.get("field")
                 op = f.get("op", "eq")
@@ -127,9 +196,15 @@ def execute_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
                 filter_func = getattr(query, op)
                 query = filter_func(field, val)
 
+            sort_info = _parse_sort_params(params)
+            if sort_info:
+                sort_field, is_desc = sort_info
+                if sort_field in known_fields:
+                    query = query.order(sort_field, desc=is_desc)
+
             if limit is not None:
                 query = query.limit(limit)
-                
+
             res = query.execute()
             records = res.data or []
             total = res.count if res.count is not None else len(records)
@@ -175,6 +250,42 @@ def execute_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
                 limit=limit,
             )
             return res
+
+        elif action == "join_query":
+            primary_table = params.get("primary_table") or table or "students"
+            join_table = params.get("join_table") or params.get("secondary_table") or "courses"
+            join_on = params.get("join_on")
+            primary_filters = params.get("primary_filters")
+            join_filters = params.get("join_filters")
+            limit = params.get("limit")
+
+            # If a single filters list is passed, auto-partition by table schema
+            if "filters" in params and not primary_filters and not join_filters:
+                p_schema = get_known_fields(primary_table)
+                j_schema = get_known_fields(join_table)
+                p_flts = []
+                j_flts = []
+                for flt in params["filters"]:
+                    f = flt.get("field")
+                    if f in p_schema:
+                        p_flts.append(flt)
+                    elif f in j_schema:
+                        j_flts.append(flt)
+                    else:
+                        p_flts.append(flt)
+                primary_filters = p_flts
+                join_filters = j_flts
+
+            data, truncated, total = generic_join_query(
+                primary_table=primary_table,
+                join_table=join_table,
+                join_on=join_on,
+                primary_filters=primary_filters,
+                join_filters=join_filters,
+                limit=limit,
+            )
+            msg = f"Joined {primary_table} with {join_table} ({len(data)} records returned)."
+            return {"success": True, "data": data, "truncated": truncated, "total": total, "message": msg}
 
         elif action == "insert_row":
             row_data = params.get("data", {})
@@ -229,10 +340,17 @@ def execute_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
 
         elif action == "delete_row":
             row_id = params.get("row_id") or params.get("rowId") or params.get("id")
-            if not row_id:
-                return {"success": False, "data": None, "message": "delete_row action requires 'row_id' param."}
-            deleted = generic_delete(table, row_id)
-            return {"success": True, "data": {"deleted": deleted, "row_id": row_id}, "message": f"Deleted row {row_id} from {table}."}
+            filters = params.get("filters")
+            if not row_id and not filters:
+                return {"success": False, "data": None, "message": "delete_row action requires 'row_id' or 'filters' param."}
+            res = generic_delete(table, row_id=row_id, filters=filters)
+            return {
+                "success": res.get("success", False),
+                "deleted": res.get("deleted", False),
+                "rows_deleted": res.get("rows_deleted", 0),
+                "data": res.get("data", []),
+                "message": res.get("message"),
+            }
 
         elif action == "restore_row" or action == "revert_row":
             row_id = params.get("row_id") or params.get("rowId") or params.get("id")

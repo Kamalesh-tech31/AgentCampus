@@ -26,16 +26,27 @@ def generic_filter(
     table: str,
     filters: List[Dict[str, Any]],
     limit: Optional[int] = None,
+    sort: Optional[Any] = None,
+    fields: Optional[List[str]] = None,
 ) -> Tuple[List[Dict[str, Any]], bool, int]:
     """
     Executes a filtered select query on table:
     1. Validates table exists in live schema.
     2. Validates every filter field and operator.
-    3. Executes query with select('*', count='exact').
+    3. Executes query with select(columns, count='exact').
     4. Returns tuple: (matching_records, is_truncated, total_count).
     """
     known_fields = get_known_fields(table)
-    query = supabase.table(table).select("*", count="exact")
+    
+    select_clause = "*"
+    if fields and isinstance(fields, list):
+        valid_cols = [f for f in fields if f in known_fields]
+        if valid_cols:
+            select_clause = ", ".join(valid_cols)
+    elif isinstance(fields, str) and fields.strip() in known_fields:
+        select_clause = fields.strip()
+
+    query = supabase.table(table).select(select_clause, count="exact")
 
     for f in filters:
         field = f.get("field")
@@ -57,6 +68,25 @@ def generic_filter(
         filter_func = getattr(query, op)
         query = filter_func(field, val)
 
+    if sort:
+        if isinstance(sort, dict):
+            s_field = sort.get("field", "id")
+            s_dir = str(sort.get("direction") or sort.get("order") or "desc").lower()
+            if s_field in known_fields:
+                query = query.order(s_field, desc=(s_dir == "desc"))
+        elif isinstance(sort, str):
+            parts = sort.strip().split()
+            if len(parts) == 1:
+                if parts[0].lower() in ("asc", "desc"):
+                    query = query.order("id", desc=(parts[0].lower() == "desc"))
+                elif parts[0] in known_fields:
+                    query = query.order(parts[0], desc=False)
+            elif len(parts) >= 2:
+                s_field = parts[0]
+                s_dir = parts[1].lower()
+                if s_field in known_fields:
+                    query = query.order(s_field, desc=(s_dir == "desc"))
+
     if limit is not None:
         query = query.limit(limit)
 
@@ -69,14 +99,22 @@ def generic_filter(
 
 
 def generic_get_all(
-    table: str, limit: Optional[int] = None
+    table: str, limit: Optional[int] = None, fields: Optional[List[str]] = None
 ) -> Tuple[List[Dict[str, Any]], bool, int]:
     """
-    Executes an unfiltered select query on table using select('*', count='exact').
+    Executes an unfiltered select query on table using select(columns, count='exact').
     Returns tuple: (all_records, is_truncated, total_count).
     """
-    get_known_fields(table)  # Validates table exists
-    query = supabase.table(table).select("*", count="exact")
+    known_fields = get_known_fields(table)  # Validates table exists
+    select_clause = "*"
+    if fields and isinstance(fields, list):
+        valid_cols = [f for f in fields if f in known_fields]
+        if valid_cols:
+            select_clause = ", ".join(valid_cols)
+    elif isinstance(fields, str) and fields.strip() in known_fields:
+        select_clause = fields.strip()
+
+    query = supabase.table(table).select(select_clause, count="exact")
 
     if limit is not None:
         query = query.limit(limit)
@@ -338,3 +376,122 @@ def generic_weighted_compute(
         "truncated": truncated,
         "message": msg,
     }
+
+
+DEPT_ALIASES = {
+    "cs": "computer science",
+    "cse": "computer science",
+    "computer science": "computer science",
+    "ai": "ai & ml",
+    "aiml": "ai & ml",
+    "ai & ml": "ai & ml",
+    "ai/ml": "ai & ml",
+    "artificial intelligence": "ai & ml",
+    "ds": "data science",
+    "data science": "data science",
+    "ece": "electronics",
+    "electronics": "electronics",
+    "mech": "mechanical",
+    "mechanical": "mechanical",
+    "civil": "civil",
+}
+
+
+def _canonical_dept(val: Any) -> str:
+    s = str(val or "").strip().lower()
+    return DEPT_ALIASES.get(s, s)
+
+
+def generic_join_query(
+    primary_table: str,
+    join_table: str,
+    join_on: Optional[Any] = None,
+    primary_filters: Optional[List[Dict[str, Any]]] = None,
+    join_filters: Optional[List[Dict[str, Any]]] = None,
+    limit: Optional[int] = None,
+) -> Tuple[List[Dict[str, Any]], bool, int]:
+    """
+    Executes a multi-table join query across two tables (e.g. students and courses on department).
+    1. Validates both tables exist in live schema.
+    2. Identifies join relationship (defaults to 'department' or 'studentId'/'id' or 'courseCode').
+    3. Fetches records from primary_table and join_table with respective filters.
+    4. Merges matched records.
+    Returns (combined_records, is_truncated, total_count).
+    """
+    primary_schema = get_known_fields(primary_table)
+    join_schema = get_known_fields(join_table)
+
+    # 1. Determine join fields
+    p_field = None
+    j_field = None
+    if isinstance(join_on, dict):
+        p_field = join_on.get("primary_field") or join_on.get("left_field")
+        j_field = join_on.get("join_field") or join_on.get("right_field")
+    elif isinstance(join_on, str):
+        p_field = join_on
+        j_field = join_on
+
+    if not p_field or not j_field:
+        if "department" in primary_schema and "department" in join_schema:
+            p_field = "department"
+            j_field = "department"
+        elif "studentId" in primary_schema and "id" in join_schema:
+            p_field = "studentId"
+            j_field = "id"
+        elif "id" in primary_schema and "studentId" in join_schema:
+            p_field = "id"
+            j_field = "studentId"
+        elif "courseCode" in primary_schema and "courseCode" in join_schema:
+            p_field = "courseCode"
+            j_field = "courseCode"
+        else:
+            raise ValueError(
+                f"Cannot resolve join between tables '{primary_table}' and '{join_table}'. "
+                f"No shared join key or relationship found."
+            )
+
+    if p_field not in primary_schema:
+        raise ValueError(f"Primary join field '{p_field}' does not exist in table '{primary_table}'.")
+    if j_field not in join_schema:
+        raise ValueError(f"Join field '{j_field}' does not exist in table '{join_table}'.")
+
+    # 2. Fetch primary records
+    p_rows, _, p_total = generic_filter(primary_table, primary_filters or [])
+
+    # 3. Fetch join records
+    j_rows, _, j_total = generic_filter(join_table, join_filters or [])
+
+    # 4. Group join records by join key
+    is_dept_join = (p_field.lower() == "department" and j_field.lower() == "department")
+
+    j_map: Dict[str, List[Dict[str, Any]]] = {}
+    for j_row in j_rows:
+        key_val = j_row.get(j_field)
+        if key_val is not None:
+            norm_key = _canonical_dept(key_val) if is_dept_join else str(key_val).strip()
+            j_map.setdefault(norm_key, []).append(j_row)
+
+    combined = []
+    for p_row in p_rows:
+        p_key_val = p_row.get(p_field)
+        norm_p_key = _canonical_dept(p_key_val) if is_dept_join else str(p_key_val).strip()
+        matched_joins = j_map.get(norm_p_key, [])
+
+        row_combined = dict(p_row)
+        # Add joined items as sub-list
+        row_combined[join_table] = matched_joins
+
+        # Flatten helpful summary fields if join table is courses
+        if join_table == "courses":
+            row_combined["courses_offered"] = [c.get("courseName") for c in matched_joins if c.get("courseName")]
+            row_combined["instructors"] = list(dict.fromkeys([c.get("instructor") for c in matched_joins if c.get("instructor")]))
+
+        combined.append(row_combined)
+
+    total_count = len(combined)
+    truncated = False
+    if limit is not None and len(combined) > limit:
+        combined = combined[:limit]
+        truncated = True
+
+    return combined, truncated, total_count

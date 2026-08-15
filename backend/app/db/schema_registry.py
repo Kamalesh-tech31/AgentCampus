@@ -39,32 +39,47 @@ def get_live_schema(force_refresh: bool = False) -> Dict[str, Dict[str, str]]:
             "apiKey": supabase_key,
             "Authorization": f"Bearer {supabase_key}",
         }
-        response = httpx.get(url, headers=headers, timeout=10.0)
+        response = httpx.get(url, headers=headers, timeout=30.0)
 
-        if response.status_code != 200:
-            logger.error(f"[SchemaRegistry] Failed to fetch OpenAPI schema: HTTP {response.status_code}")
-            return _live_schema_cache or {}
+        if response.status_code == 200:
+            spec = response.json()
+            definitions = spec.get("definitions", {})
 
-        spec = response.json()
-        definitions = spec.get("definitions", {})
+            schema: Dict[str, Dict[str, str]] = {}
+            for table_name, table_def in definitions.items():
+                properties = table_def.get("properties", {})
+                table_fields: Dict[str, str] = {}
+                for col_name, col_props in properties.items():
+                    col_type = col_props.get("format") or col_props.get("type") or "text"
+                    table_fields[col_name] = col_type
+                schema[table_name] = table_fields
 
-        schema: Dict[str, Dict[str, str]] = {}
-        for table_name, table_def in definitions.items():
-            properties = table_def.get("properties", {})
-            table_fields: Dict[str, str] = {}
-            for col_name, col_props in properties.items():
-                col_type = col_props.get("format") or col_props.get("type") or "text"
-                table_fields[col_name] = col_type
-            schema[table_name] = table_fields
-
-        _live_schema_cache = schema
-        _cache_timestamp = now
-        logger.info(f"[SchemaRegistry] Live schema updated ({len(schema)} tables discovered: {list(schema.keys())})")
-        return schema
-
+            if schema:
+                _live_schema_cache = schema
+                _cache_timestamp = now
+                logger.info(f"[SchemaRegistry] Live schema updated ({len(schema)} tables discovered: {list(schema.keys())})")
+                return schema
     except Exception as exc:
         logger.error(f"[SchemaRegistry] Exception fetching live schema: {exc}")
-        return _live_schema_cache or {}
+
+    # Fallback to PostgREST table column inspection if OpenAPI endpoint is slow/unavailable
+    if _live_schema_cache:
+        return _live_schema_cache
+
+    try:
+        from app.db.client import supabase
+        schema = {}
+        for tbl in ("students", "courses", "enrollments", "history"):
+            res = supabase.table(tbl).select("*").limit(1).execute()
+            if res.data:
+                schema[tbl] = {k: "numeric" if isinstance(v, (int, float)) else "text" for k, v in res.data[0].items()}
+            else:
+                schema[tbl] = {"id": "text", "name": "text", "department": "text", "cgpa": "numeric", "status": "text"}
+        _live_schema_cache = schema
+        _cache_timestamp = now
+        return schema
+    except Exception:
+        return {}
 
 
 def invalidate_schema_cache() -> None:

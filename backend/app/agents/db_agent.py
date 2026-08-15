@@ -6,6 +6,7 @@ from app.services.student_service import student_service
 from app.contracts.students import StudentRecord
 from app.agents.vault_planner import vault_llm_plan
 from app.agents.vault_executor import execute_plan
+from app.db.sql import build_legacy_students_sql
 
 
 def _format_sql_from_plan(plan: Dict[str, Any]) -> str:
@@ -65,7 +66,7 @@ class DBAgent(BaseAgent):
             return self._execute_file_parsed_flow(task, structured_intent, parsed_records)
 
         # Legacy backward compatibility check: if no "table" key AND contains legacy structured intent fields
-        is_legacy = "table" not in task.input_data and "table" not in input_result and any(
+        is_legacy = "table" not in structured_intent and "table" not in task.input_data and any(
             k in structured_intent for k in ("department", "min_cgpa", "status_filter")
         )
         if is_legacy:
@@ -141,9 +142,8 @@ class DBAgent(BaseAgent):
         if status_filter:
             where_clauses.append(f"status = '{status_filter}'")
 
-        where_str = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
         order_dir = "DESC" if sort_desc else "ASC"
-        sql = f"SELECT * FROM students{where_str} ORDER BY {sort_field} {order_dir} LIMIT {limit_val};"
+        sql = build_legacy_students_sql(where_clauses, sort_field=sort_field, order_dir=order_dir, limit=limit_val)
 
         filtered: List[StudentRecord] = []
         for student in source_students:
@@ -197,8 +197,7 @@ class DBAgent(BaseAgent):
         if status_filter:
             where_clauses.append(f"status = '{status_filter}'")
 
-        where_str = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
-        sql = f"SELECT * FROM students{where_str} ORDER BY cgpa DESC LIMIT {limit};"
+        sql = build_legacy_students_sql(where_clauses, sort_field="cgpa", order_dir="DESC", limit=limit)
 
         all_students = student_service.get_students()
         filtered: List[StudentRecord] = []
@@ -214,7 +213,18 @@ class DBAgent(BaseAgent):
                 continue
             filtered.append(student)
 
-        filtered.sort(key=lambda s: s.cgpa, reverse=True)
+        sort_spec = structured_intent.get("sort")
+        sort_field = "cgpa"
+        sort_desc = True
+        if sort_spec:
+            sort_field = sort_spec.get("field", "cgpa")
+            sort_desc = sort_spec.get("direction", "desc") == "desc"
+
+        try:
+            filtered.sort(key=lambda s: getattr(s, sort_field, 0) or 0, reverse=sort_desc)
+        except Exception:
+            filtered.sort(key=lambda s: s.cgpa, reverse=True)
+
         final_records = filtered[:limit]
 
         validated_records = [

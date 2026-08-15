@@ -34,9 +34,17 @@ from app.agents.db_agent import DBAgent
 from app.mother.types import AgentTask
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Helpers
-# ─────────────────────────────────────────────────────────────────────────────
+@pytest.fixture(autouse=True)
+def mock_schema_discovery(monkeypatch):
+    mock_cols = {
+        "students": {"id": "text", "rollNumber": "text", "name": "text", "department": "text", "cgpa": "numeric", "semester": "int", "attendance": "numeric", "email": "text", "status": "text", "backlogs": "int", "projectTitle": "text", "japaneseScore": "text", "phoneNumber": "text", "bloodGroup": "text"},
+        "courses": {"id": "text", "courseCode": "text", "title": "text", "department": "text", "credits": "int", "semester": "int", "instructor": "text", "syllabus": "text", "capacity": "int"},
+        "enrollments": {"id": "text", "studentId": "text", "courseCode": "text", "grade": "text", "enrolledAt": "timestamptz"},
+        "history": {"id": "text", "rowId": "text", "originalTable": "text", "action": "text", "oldData": "jsonb", "newData": "jsonb", "timestamp": "timestamptz"},
+    }
+    monkeypatch.setattr("app.db.schema.get_table_columns", lambda table_name, force_refresh=False: mock_cols.get(table_name.lower().rstrip("s"), mock_cols.get("students", {})))
+    monkeypatch.setattr("app.db.schema_registry.get_live_schema", lambda force_refresh=False: mock_cols)
+
 
 def _make_task(query: str, task_id: str = "TEST-001") -> AgentTask:
     return AgentTask(
@@ -790,3 +798,51 @@ class TestDBAgentIntegration:
         assert result.status == "completed"
         assert "SELECT * FROM students WHERE department = 'Computer Science'" in result.result["sql"]
         assert all(r["cgpa"] >= 9.0 for r in result.result["records"])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Vault Contract Alignment Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestVaultContractAlignment:
+    def test_insert_student(self):
+        si = _run_input("add student Ravi to CSE department")
+        assert si["action"] == "insert_row"
+        assert si["table"] == "students"
+        assert si["data"].get("department") == "Computer Science"
+
+    def test_update_student(self):
+        si = _run_input("update STU-1001 cgpa to 9.0")
+        assert si["action"] == "update_row"
+        assert si["table"] == "students"
+        assert si["row_id"] == "STU-1001"
+        assert si["data"].get("cgpa") == 9.0
+
+    def test_delete_student(self):
+        si = _run_input("delete STU-1001")
+        assert si["action"] == "delete_row"
+        assert si["table"] == "students"
+        assert si["row_id"] == "STU-1001"
+
+    def test_filter_students(self):
+        si = _run_input("show CSE students")
+        assert si["action"] == "filter_rows"
+        assert si["table"] == "students"
+
+    def test_count_students(self):
+        si = _run_input("how many students are there")
+        assert si["action"] == "count_rows"
+        assert si["table"] == "students"
+
+    def test_create_table(self):
+        si = _run_input("create a table called bookLoans with student id, book title, due date")
+        assert si["action"] == "create_table"
+        assert si["table"] == "bookLoans"
+        assert "studentId" in si["params"].get("columns", {})
+
+    def test_add_column(self):
+        si = _run_input("add a returned column to bookLoans")
+        assert si["action"] == "add_column"
+        assert si["table"] == "bookLoans"
+        assert si["params"].get("column_name") == "returned"
+

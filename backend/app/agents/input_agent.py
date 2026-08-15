@@ -20,7 +20,7 @@ Must NOT: query DB · execute SQL · compute analytics · generate final output 
 """
 import logging
 import re
-from typing import Optional
+from typing import Optional, Dict
 
 from app.agents.base import BaseAgent
 from app.agents.file_parser import is_supported_file, parse_file, SUPPORTED_EXTENSIONS
@@ -579,6 +579,298 @@ def extract_fields(query_lower: str) -> list[str]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Vault Contract Mapping Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+from app.db.schema import get_table_columns
+
+
+def normalize_field_name(name: str) -> str:
+    """Removes spaces, underscores, and hyphens and lowercases for fuzzy normalization."""
+    return name.lower().replace(" ", "").replace("_", "").replace("-", "")
+
+
+def find_matching_column(phrase: str, real_columns: Dict[str, str]) -> Optional[str]:
+    """
+    Explicit case-insensitive & spacing/underscore tolerant matching.
+    Lowercases both the query phrase and real column name before comparing.
+    E.g. 'phone number', 'Phone Number', 'phone_number', 'phoneNumber', 'PHONENUMBER'
+    all match a real database column named 'phoneNumber'.
+    """
+    if not phrase or not real_columns:
+        return None
+
+    clean_phrase = normalize_field_name(phrase)
+    if not clean_phrase:
+        return None
+
+    for col in real_columns.keys():
+        # Explicit lowercasing comparison step
+        if col.lower() == phrase.lower():
+            return col
+        if normalize_field_name(col) == clean_phrase:
+            return col
+
+    return None
+
+
+def extract_table(query: str, query_lower: str) -> str:
+    """
+    Extracts target database table name from user query.
+    Defaults to 'students' if no specific table is mentioned.
+    Normalizes casing and singular/plural variants against known tables:
+    ('students', 'courses', 'enrollments', 'history').
+    """
+    # 1. CREATE TABLE path (preserve exact behavior for dynamic table creation e.g. "bookLoans")
+    m_create = re.search(r"\btable\s+(?:called\s+|named\s+)?([a-zA-Z0-9_]+)\b", query, re.IGNORECASE)
+    if m_create:
+        tbl_candidate = m_create.group(1).strip()
+        tbl_cand_lower = tbl_candidate.lower().rstrip("s")
+        if tbl_cand_lower not in ("student", "course", "enrollment", "history", "called", "named"):
+            return tbl_candidate
+
+    # 2. Known table map for case-insensitive & singular/plural tolerance
+    known_map = {
+        "student": "students", "students": "students",
+        "course": "courses", "courses": "courses",
+        "enrollment": "enrollments", "enrollments": "enrollments",
+        "history": "history", "histories": "history",
+    }
+
+    # 3. Explicit target prepositions (from student, in course, into enrollments, etc.)
+    m_target = re.search(r"\b(?:to|from|into|in|on)\s+(?:table\s+)?([a-zA-Z0-9_]+)\b", query, re.IGNORECASE)
+    if m_target:
+        candidate = m_target.group(1).strip()
+        cand_lower = candidate.lower()
+        if cand_lower in known_map:
+            return known_map[cand_lower]
+        dept_shortcodes = {"cse", "cs", "ece", "ec", "mech", "ce", "ds", "aiml", "ai", "ml", "computer", "electronics", "mechanical", "civil", "data", "science", "the", "department", "probation"}
+        if cand_lower not in dept_shortcodes:
+            if candidate[0].isupper() or any(c.isupper() for c in candidate[1:]):
+                return candidate
+
+    # 4. Keyword presence check against query_lower
+    if "course" in query_lower:
+        return "courses"
+    if "enrollment" in query_lower:
+        return "enrollments"
+    if "history" in query_lower:
+        return "history"
+    if "student" in query_lower:
+        return "students"
+
+    return "students"
+
+
+def extract_row_id(query: str, query_lower: str, filters: list[dict]) -> Optional[str]:
+    """
+    Extracts row identifier (e.g. STU-1001, ENR-101, CRS-101, 101) from query or filters.
+    """
+    for f in filters:
+        if isinstance(f, dict) and f.get("field") in ("id", "rowId", "row_id") and f.get("value"):
+            return str(f["value"])
+
+    m_id = re.search(r"\b([A-Z]{2,4}-(?:[A-Z]{2,4}-)?\d+)\b", query)
+    if m_id:
+        return m_id.group(1)
+
+    m_num = re.search(r"\b(?:id|rowId|row_id)\s+([A-Za-z0-9-]+)\b", query, re.IGNORECASE)
+    if m_num:
+        val = m_num.group(1).strip()
+        if val.lower() not in ("with", "has", "is", "where", "cgpa", "in", "from", "on", "a", "the"):
+            return val
+
+    if not any(query_lower.startswith(prefix) for prefix in ("add ", "insert ", "create ")):
+        m_stu = re.search(r"\b(?:student|course|enrollment)\s+([A-Za-z0-9-]*\d+[A-Za-z0-9-]*)\b", query, re.IGNORECASE)
+        if m_stu:
+            return m_stu.group(1).strip()
+
+    return None
+
+
+def extract_data(query: str, query_lower: str, parsed_records: Optional[list], table: str = "students") -> dict:
+    """
+    Constructs a data dictionary for insert_row / update_row actions using dynamic column discovery.
+    Fuzzy-matches query phrasing against live schema columns.
+    """
+    if parsed_records and isinstance(parsed_records, list) and len(parsed_records) > 0:
+        if isinstance(parsed_records[0], dict):
+            return dict(parsed_records[0])
+
+    data: dict = {}
+    cols = get_table_columns(table)
+    if not cols:
+        cols = get_table_columns("students")
+
+    # 1. Dynamic extraction for any column present in live schema (newly discovered or standard)
+    # E.g. "update phone number for STU-1001 to 9876543210", "bloodGroup is O+"
+    for col_name, col_type in cols.items():
+        if col_name == "id":
+            continue
+
+        # Variations of column phrasing (e.g. "phone number", "phone_number", "phoneNumber")
+        phrasings = [
+            col_name,
+            col_name.lower(),
+            re.sub(r"([A-Z])", r" \1", col_name).lower().strip(),
+            col_name.replace("_", " ").lower(),
+        ]
+        phrasings = list(dict.fromkeys(phrasings))
+
+        for phrase in phrasings:
+            pattern = (
+                r"\b(?:set\s+|update\s+)?" + re.escape(phrase) +
+                r"\s+(?:for|to|is|=|\s+)\s*([A-Za-z0-9_+\-@.]+)"
+            )
+            m = re.search(pattern, query_lower, re.IGNORECASE)
+            if m:
+                val_str = m.group(1).strip().rstrip(".,;!?")
+                if val_str.lower() not in ("for", "to", "is", "where", "students", "student", "courses"):
+                    matched_real_col = find_matching_column(phrase, cols) or col_name
+                    if col_type in ("numeric", "float", "number", "int", "integer"):
+                        try:
+                            data[matched_real_col] = float(val_str) if "." in val_str else int(val_str)
+                        except ValueError:
+                            data[matched_real_col] = val_str
+                    else:
+                        data[matched_real_col] = val_str
+                    break
+
+    # 2. Entity extractions as baseline
+    col_name_matched = find_matching_column("name", cols)
+    if col_name_matched and col_name_matched not in data:
+        m_name = re.search(r"\b(?:student|name)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b", query)
+        if m_name:
+            candidate_name = m_name.group(1).strip()
+            if candidate_name.lower() not in ("computer science", "electronics", "mechanical", "civil", "data science", "ai & ml", "top", "with"):
+                data[col_name_matched] = candidate_name
+
+    col_dept_matched = find_matching_column("department", cols)
+    if col_dept_matched and col_dept_matched not in data:
+        dept = extract_department(query_lower)
+        if dept:
+            data[col_dept_matched] = dept
+
+    col_cgpa_matched = find_matching_column("cgpa", cols)
+    if col_cgpa_matched and col_cgpa_matched not in data:
+        m_cgpa = re.search(r"\bcgpa\s+(?:to\s+|=?\s*)(\d+(?:\.\d+)?)\b", query_lower)
+        if m_cgpa:
+            try:
+                data[col_cgpa_matched] = float(m_cgpa.group(1))
+            except ValueError:
+                pass
+
+    col_status_matched = find_matching_column("status", cols)
+    if col_status_matched and col_status_matched not in data:
+        status = extract_status_filter(query_lower)
+        if status:
+            data[col_status_matched] = status
+
+    return data
+
+
+def derive_action(
+    operation: str,
+    query_lower: str,
+    filters: list[dict],
+    row_id: Optional[str],
+    data: dict,
+    parsed_records: Optional[list] = None,
+) -> str:
+    """
+    Derives Vault-compliant action from query semantics and operation classification.
+    """
+    if re.search(r"\bcreate\s+(?:a\s+)?table\b", query_lower):
+        return "create_table"
+    if re.search(r"\badd\s+(?:a\s+)?(?:[a-zA-Z0-9_]+\s+)?column\b", query_lower):
+        return "add_column"
+    if re.search(r"\bdrop\s+(?:a\s+)?column\b", query_lower):
+        return "drop_column"
+
+    if operation == "write":
+        if any(kw in query_lower for kw in ("delete", "remove")):
+            return "delete_row"
+        if any(kw in query_lower for kw in ("restore", "revert", "undo")):
+            return "restore_row"
+        if any(kw in query_lower for kw in ("increase", "decrease", "multiply", "bulk")):
+            return "bulk_update"
+        if row_id or any(kw in query_lower for kw in ("update", "set ", "change")):
+            return "update_row"
+        return "insert_row"
+
+    if operation == "analytics":
+        if any(kw in query_lower for kw in ("how many", "count")):
+            return "count_rows"
+        if any(kw in query_lower for kw in ("weighted", "weight", "composite")):
+            return "weighted_compute"
+        return "compute_filter"
+
+    if filters or extract_department(query_lower) or extract_status_filter(query_lower):
+        return "filter_rows"
+
+    return "get_all_rows"
+
+
+def build_params(
+    action: str,
+    query: str,
+    table: str,
+    row_id: Optional[str],
+    data: dict,
+    filters: list[dict],
+    sort: Optional[dict],
+    limit: Optional[int],
+) -> dict:
+    """
+    Builds Vault-compliant params payload for structured_intent.
+    """
+    params: dict = {}
+
+    if action == "create_table":
+        cols: dict = {"id": "text"}
+        if "student id" in query.lower() or "studentid" in query.lower():
+            cols["studentId"] = "text"
+        if "book title" in query.lower() or "booktitle" in query.lower() or "title" in query.lower():
+            cols["bookTitle"] = "text"
+        if "due date" in query.lower() or "duedate" in query.lower() or "date" in query.lower():
+            cols["dueDate"] = "timestamptz"
+        if len(cols) == 1:
+            cols = {"id": "text", "studentId": "text", "courseCode": "text", "grade": "text", "enrolledAt": "timestamptz"}
+        params["columns"] = cols
+
+    elif action == "add_column":
+        m_col = re.search(r"\badd\s+(?:a\s+)?([a-zA-Z0-9_]+)\s+column\b", query, re.IGNORECASE)
+        col_name = m_col.group(1).strip() if m_col else "status"
+        if col_name.lower() in ("a", "new", "the"):
+            m_col2 = re.search(r"\bcolumn\s+(?:called\s+|named\s+)?([a-zA-Z0-9_]+)\b", query, re.IGNORECASE)
+            col_name = m_col2.group(1).strip() if m_col2 else "status"
+        params["column_name"] = col_name
+        params["column_type"] = "boolean" if col_name.lower() in ("returned", "active", "passed") else "text"
+
+    elif action == "drop_column":
+        m_col = re.search(r"\bdrop\s+(?:column\s+)?([a-zA-Z0-9_]+)\b", query, re.IGNORECASE)
+        params["column_name"] = m_col.group(1).strip() if m_col else "status"
+
+    elif action in ("insert_row", "update_row"):
+        params["data"] = data
+        if row_id:
+            params["row_id"] = row_id
+
+    elif action in ("delete_row", "restore_row"):
+        if row_id:
+            params["row_id"] = row_id
+
+    elif action in ("filter_rows", "get_all_rows"):
+        params["filters"] = filters
+        if sort:
+            params["sort"] = sort
+        if limit:
+            params["limit"] = limit
+
+    return params
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Analytics hint extraction
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -647,7 +939,10 @@ def detect_operation(query_lower: str) -> str:
     if any(kw in query_lower for kw in analytics_kw):
         return "analytics"
 
-    write_kw = ["update", "delete", "insert", "add student", "modify", "set cgpa", "change"]
+    write_kw = [
+        "update", "delete", "insert", "add", "create", "modify", "set ", "change",
+        "remove", "drop", "borrow", "loan", "record", "register", "save",
+    ]
     if any(kw in query_lower for kw in write_kw):
         return "write"
 
@@ -803,6 +1098,21 @@ class InputAgent(BaseAgent):
         logger.info("InputAgent normalised query: '%s'", query_lower[:200])
 
         operation = detect_operation(query_lower)
+
+        # ── Safeguard: Align operation with MotherAgent's request_type if passed ──
+        mother_request_type = task.input_data.get("request_type") or task.input_data.get("requestType")
+        if mother_request_type and isinstance(mother_request_type, str):
+            mother_req_lower = mother_request_type.lower()
+            if mother_req_lower in ("read", "write", "analytics", "complex") and operation != mother_req_lower:
+                target_op = "write" if mother_req_lower == "complex" else mother_req_lower
+                logger.warning(
+                    "InputAgent operation mismatch — InputAgent classified as '%s', "
+                    "but MotherAgent specified request_type='%s'. Aligning operation to '%s'.",
+                    operation,
+                    mother_request_type,
+                    target_op,
+                )
+                operation = target_op
         department = extract_department(query_lower)
         cgpa_filters = extract_cgpa_filter(query_lower)
         attendance_filters = extract_attendance_filter(query_lower)
@@ -834,34 +1144,38 @@ class InputAgent(BaseAgent):
 
         min_cgpa = _derive_min_cgpa(cgpa_filters)
 
+        # ── Vault Contract Mapping ──
+        table = extract_table(query, query_lower)
+        row_id = extract_row_id(query, query_lower, all_filters)
+        data = extract_data(query, query_lower, parsed_records, table=table)
+        action = derive_action(operation, query_lower, all_filters, row_id, data, parsed_records)
+        params = build_params(action, query, table, row_id, data, all_filters, sort, limit)
+
         structured_intent: dict = {
-            # ── Core ──
+            # ── Vault Input Contract Keys ──
+            "action": action,
+            "table": table,
+            "data": data,
+            "row_id": row_id,
+            "query": query,
+            "params": params,
+
+            # ── Core InputAgent Keys ──
             "operation": operation,
             "original_query": (
                 file_path if source_type == "file" else query
             ),
             "source_type": source_type,     # "text" | "file"
-            # ── File-parsed records (if a table was extracted from a file) ──
-            # DBAgent will filter/sort these instead of the main database.
             "parsed_records": parsed_records,
-            # ── Department ──
             "department": department,
-            # ── Unified filter list ──
             "filters": all_filters,
-            # ── Sort ──
             "sort": sort,
-            # ── Limit ──
             "limit": limit,
-            # ── Field selection ──
             "fields": fields if fields else None,
-            # ── Status / probation ──
             "status_filter": status_filter,
-            # ── Analytics ──
             "analytics_hint": analytics_hint,
-            # ── Ambiguity ──
             "ambiguous": ambiguous,
             "ambiguity_reason": ambiguity_reason,
-            # ── Backward-compatibility ──
             "intent": "student_update" if operation == "write" else "student_query",
             "min_cgpa": min_cgpa,
         }

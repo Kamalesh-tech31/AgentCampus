@@ -51,12 +51,10 @@ def call_groq_completion(
         if m not in models_to_try:
             models_to_try.append(m)
 
-    last_error = None
-
-    for key_name, api_key in keys_to_try:
-        client = groq.Groq(api_key=api_key)
-        for target_model in models_to_try:
+    for target_model in models_to_try:
+        for key_name, api_key in keys_to_try:
             try:
+                client = groq.Groq(api_key=api_key)
                 logger.info(f"[GroqFallback] Requesting via {key_name} with model={target_model}...")
                 kwargs = {
                     "model": target_model,
@@ -76,12 +74,12 @@ def call_groq_completion(
                 last_error = exc
                 if "429" in err_str or "rate limit" in err_str or "quota" in err_str or "tokens per day" in err_str:
                     logger.warning(
-                        f"[GroqFallback] {key_name} on model={target_model} hit 429/rate-limit error. Trying next model/key..."
+                        f"[GroqFallback] {key_name} on model={target_model} hit 429/rate-limit error. Trying next key with model={target_model}..."
                     )
                     continue
                 else:
                     logger.error(f"[GroqFallback] Non-rate-limit error on {key_name}/{target_model}: {exc}")
-                    break
+                    continue
 
     raise RuntimeError(f"All Groq fallback options exhausted across all configured keys and models. Last error: {last_error}")
 

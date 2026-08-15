@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 ALLOWED_ACTIONS = [
     "filter_rows",
     "get_all_rows",
+    "join_query",
     "insert_row",
     "update_row",
     "delete_row",
@@ -28,6 +29,9 @@ ALLOWED_ACTIONS = [
 ]
 
 
+from app.db.schema import get_table_columns
+
+
 def _deterministic_fallback_plan(lens_output: Dict[str, Any]) -> Dict[str, Any]:
     """
     Fallback planner when Groq API keys are exhausted or unavailable.
@@ -38,11 +42,41 @@ def _deterministic_fallback_plan(lens_output: Dict[str, Any]) -> Dict[str, Any]:
     tbl = lens_output.get("table", "students")
     params = lens_output.get("params", {})
 
+    cols = get_table_columns(tbl)
+    numeric_fields = [k for k, v in cols.items() if str(v).lower() in ("numeric", "int", "integer", "float", "number") or k in ("cgpa", "attendance", "credits", "semester", "backlogs")]
+
     if action in ALLOWED_ACTIONS:
         row_id = lens_output.get("row_id") or lens_output.get("rowId") or lens_output.get("id") or params.get("row_id") or params.get("rowId") or params.get("id")
         if row_id:
             params["row_id"] = row_id
         return {"action": action, "table": tbl, "params": params}
+
+    if "along with" in query or "and their" in query or ("student" in query and "course" in query):
+        dept_val = None
+        if "ai & ml" in query or "ai and ml" in query or "aiml" in query:
+            dept_val = "AI & ML"
+        elif "computer science" in query or "cs" in query or "cse" in query:
+            dept_val = "Computer Science"
+        elif "electronics" in query or "ece" in query:
+            dept_val = "Electronics"
+        elif "mechanical" in query or "mech" in query:
+            dept_val = "Mechanical"
+        elif "civil" in query:
+            dept_val = "Civil"
+
+        p_flts = [{"field": "department", "op": "eq", "value": dept_val}] if dept_val else []
+        j_flts = [{"field": "department", "op": "eq", "value": dept_val}] if dept_val else []
+        return {
+            "action": "join_query",
+            "table": "students",
+            "params": {
+                "primary_table": "students",
+                "join_table": "courses",
+                "join_on": {"primary_field": "department", "join_field": "department"},
+                "primary_filters": p_flts,
+                "join_filters": j_flts,
+            }
+        }
 
     if action == "insert":
         row_data = lens_output.get("data", {})
@@ -57,8 +91,8 @@ def _deterministic_fallback_plan(lens_output: Dict[str, Any]) -> Dict[str, Any]:
         row_id = lens_output.get("row_id") or lens_output.get("rowId") or lens_output.get("id") or params.get("row_id") or params.get("rowId") or params.get("id")
         return {"action": "restore_row", "table": tbl, "params": {"row_id": row_id}}
     elif action == "create_table" or "create a table" in query or "create table" in query:
-        cols = params.get("columns", {"id": "text", "studentId": "text", "courseCode": "text", "grade": "text", "enrolledAt": "timestamptz"})
-        return {"action": "create_table", "table": tbl, "params": {"columns": cols}}
+        cols_param = params.get("columns", {"id": "text", "studentId": "text", "courseCode": "text", "grade": "text", "enrolledAt": "timestamptz"})
+        return {"action": "create_table", "table": tbl, "params": {"columns": cols_param}}
     elif action == "add_column" or ("add" in query and "column" in query):
         col_name = params.get("column_name", "status")
         col_type = params.get("column_type", "text")
@@ -69,7 +103,10 @@ def _deterministic_fallback_plan(lens_output: Dict[str, Any]) -> Dict[str, Any]:
     elif "weighted" in query or "weight" in query or "composite" in query:
         if "tuition_fee" in query or "physics_score" in query or "all subject" in query:
             return {"action": "error", "params": {"message": f"Specified field(s) do not exist in table '{tbl}'. Only registered numeric fields can be weighted."}}
-        weights = [{"field": "cgpa", "weight": 0.5}, {"field": "attendance", "weight": 0.5}] if tbl == "students" else [{"field": "credits", "weight": 0.7}, {"field": "semester", "weight": 0.3}]
+        if len(numeric_fields) >= 2:
+            weights = [{"field": numeric_fields[0], "weight": 0.5}, {"field": numeric_fields[1], "weight": 0.5}]
+        else:
+            weights = [{"field": "cgpa", "weight": 0.5}, {"field": "attendance", "weight": 0.5}] if tbl == "students" else [{"field": "credits", "weight": 0.7}, {"field": "semester", "weight": 0.3}]
         return {"action": "weighted_compute", "table": tbl, "params": {"weights": weights, "filters": [], "sort": "desc"}}
     elif "average" in query or "min" in query or "max" in query or "sum" in query:
         if "physics_score" in query or "all subject" in query or "marks" in query or "tuition_fee" in query:
@@ -78,28 +115,35 @@ def _deterministic_fallback_plan(lens_output: Dict[str, Any]) -> Dict[str, Any]:
         if "min" in query: agg = "min"
         elif "max" in query: agg = "max"
         elif "sum" in query: agg = "sum"
-        fields = ["cgpa", "attendance"] if tbl == "students" else ["credits", "semester"]
+        if len(numeric_fields) >= 2:
+            fields = numeric_fields[:2]
+        else:
+            fields = ["cgpa", "attendance"] if tbl == "students" else ["credits", "semester"]
         return {"action": "compute_filter", "table": tbl, "params": {"fields": fields, "aggregate": agg, "condition": {"op": "gt", "value": 1.0}, "filters": []}}
     elif "increase" in query or "bulk" in query:
-        fld = "cgpa" if tbl == "students" else "credits"
+        fld = numeric_fields[0] if numeric_fields else ("cgpa" if tbl == "students" else "credits")
         return {"action": "bulk_update", "table": tbl, "params": {"filters": [{"field": "department", "op": "eq", "value": "Computer Science"}], "field": fld, "operation": "add", "value": 0.01}}
     elif action == "count_rows" or "count" in query:
         return {"action": "count_rows", "table": tbl, "params": {}}
-    
-    # Check for direct filter keys in lens_output or query
+
+    # Check for direct filter keys in lens_output or query dynamically
     filters = []
-    if "department" in lens_output:
-        filters.append({"field": "department", "op": "eq", "value": lens_output["department"]})
-    if "cgpa" in lens_output:
-        filters.append({"field": "cgpa", "op": "gte", "value": lens_output["cgpa"]})
-    if "credits" in lens_output:
-        filters.append({"field": "credits", "op": "gte", "value": lens_output["credits"]})
-    if "backlogs" in lens_output:
-        filters.append({"field": "backlogs", "op": "eq", "value": lens_output["backlogs"]})
-    if "semester" in lens_output:
-        filters.append({"field": "semester", "op": "eq", "value": lens_output["semester"]})
-    if "studentId" in lens_output:
-        filters.append({"field": "studentId", "op": "eq", "value": lens_output["studentId"]})
+    if cols:
+        for col_name in cols.keys():
+            if col_name in lens_output:
+                filters.append({"field": col_name, "op": "eq" if col_name not in ("cgpa", "credits") else "gte", "value": lens_output[col_name]})
+    else:
+        for known_k in ("department", "cgpa", "credits", "backlogs", "semester", "studentId"):
+            if known_k in lens_output:
+                filters.append({"field": known_k, "op": "eq" if known_k not in ("cgpa", "credits") else "gte", "value": lens_output[known_k]})
+
+    import re
+    m_roll = re.search(r'\b(21[A-Z]{2}\d{3})\b', query, re.IGNORECASE)
+    if m_roll and not any(f.get("field") == "rollNumber" for f in filters):
+        filters.append({"field": "rollNumber", "op": "eq", "value": m_roll.group(1).upper()})
+    m_stu = re.search(r'\b(STU-\d+)\b', query, re.IGNORECASE)
+    if m_stu and not any(f.get("field") == "id" for f in filters):
+        filters.append({"field": "id", "op": "eq", "value": m_stu.group(1).upper()})
 
     if not filters and "computer science" in query:
         filters.append({"field": "department", "op": "eq", "value": "Computer Science"})
@@ -110,10 +154,24 @@ def _deterministic_fallback_plan(lens_output: Dict[str, Any]) -> Dict[str, Any]:
     elif not filters and "4th semester" in query:
         filters.append({"field": "semester", "op": "eq", "value": 4})
 
+    req_fields = lens_output.get("fields")
+    if not req_fields:
+        req_fields = []
+        if "name" in query and ("name of" in query or query.startswith("return name") or query.startswith("get name") or "show name" in query):
+            req_fields.append("name")
+        if "cgpa" in query and ("cgpa of" in query or "show cgpa" in query or "return cgpa" in query):
+            req_fields.append("cgpa")
+        if "email" in query and ("email of" in query or "show email" in query or "return email" in query):
+            req_fields.append("email")
+
+    params_out = {"filters": filters} if filters else {}
+    if req_fields:
+        params_out["fields"] = req_fields
+
     if filters:
-        return {"action": "filter_rows", "table": tbl, "params": {"filters": filters}}
+        return {"action": "filter_rows", "table": tbl, "params": params_out}
     
-    return {"action": "get_all_rows", "table": tbl, "params": {}}
+    return {"action": "get_all_rows", "table": tbl, "params": params_out}
 
 
 def _post_validate_plan(plan: Dict[str, Any], lens_output: Dict[str, Any]) -> Dict[str, Any]:
@@ -130,9 +188,9 @@ def _post_validate_plan(plan: Dict[str, Any], lens_output: Dict[str, Any]) -> Di
     query_str = str(lens_output.get("query", "")).lower()
 
     # 1. Un-registered field validation
-    live_schema = get_live_schema(force_refresh=True)
-    if table in live_schema:
-        known_cols = live_schema[table]
+    live_schema = get_live_schema(force_refresh=False)
+    known_cols = live_schema.get(table) if live_schema and table in live_schema else get_table_columns(table)
+    if known_cols:
         # Check query string for un-registered fields (e.g., tuition_fee, physics_score)
         if "tuition_fee" in query_str or "physics_score" in query_str or "all subject" in query_str:
             return {"action": "error", "params": {"message": f"Specified field(s) do not exist in table '{table}'. Only registered numeric fields can be aggregated."}}
@@ -140,15 +198,53 @@ def _post_validate_plan(plan: Dict[str, Any], lens_output: Dict[str, Any]) -> Di
         # Check fields in params
         req_fields = params.get("fields", [])
         if isinstance(req_fields, list):
+            valid_fields = []
             for f in req_fields:
+                if f in ("*", "all"):
+                    continue
                 if f not in known_cols:
                     return {"action": "error", "params": {"message": f"Specified field(s) do not exist in table '{table}'. Only registered numeric fields can be aggregated."}}
+                valid_fields.append(f)
+            if valid_fields:
+                params["fields"] = valid_fields
+            elif "fields" in params:
+                del params["fields"]
 
         filters = params.get("filters", [])
         if isinstance(filters, list):
+            cleaned_filters = []
             for flt in filters:
-                if isinstance(flt, dict) and flt.get("field") and flt["field"] not in known_cols:
+                if not isinstance(flt, dict):
+                    continue
+                f_name = flt.get("field")
+                f_op = str(flt.get("op", "eq")).lower()
+                f_val = flt.get("value")
+
+                if f_name and f_name not in known_cols:
                     return {"action": "error", "params": {"message": f"Specified field(s) do not exist in table '{table}'. Only registered numeric fields can be aggregated."}}
+
+                # Validate comparison operators (lt, lte, gt, gte)
+                if f_op in {"lt", "lte", "gt", "gte"}:
+                    if isinstance(f_val, str):
+                        try:
+                            float(f_val)
+                        except (ValueError, TypeError):
+                            return {
+                                "action": "error",
+                                "params": {
+                                    "message": f"Invalid comparison filter: Operator '{f_op}' on field '{f_name}' requires a numeric comparison value, but received '{f_val}'."
+                                },
+                            }
+
+                # Handle hallucinated placeholder values for equality (e.g. eq "all", eq "*")
+                if f_op == "eq" and str(f_val).lower() in {"all", "any", "every", "*"}:
+                    continue
+
+                cleaned_filters.append(flt)
+
+            params["filters"] = cleaned_filters
+            if not cleaned_filters and plan.get("action") == "filter_rows":
+                plan["action"] = "get_all_rows"
 
     # 2. Validation for weighted_compute action
     if plan.get("action") == "weighted_compute":
@@ -259,9 +355,16 @@ RULES:
 
 10. ROW IDENTIFIER KEY: For update_row, delete_row, and restore_row actions, ALWAYS use "row_id" (snake_case) as the key name in the params object. Example: {{"action": "restore_row", "table": "students", "params": {{"row_id": "STU-101"}}}}
 
-11. Return ONLY a valid JSON object matching the schema:
+11. JOIN QUERIES (join_query): If the query requests data combining two related tables (e.g. "along with", "and their", "students in department X along with courses", "show instructor names for courses in X along with students"), output:
+   {{"action": "join_query", "table": "students", "params": {{"primary_table": "students", "join_table": "courses", "join_on": {{"primary_field": "department", "join_field": "department"}}, "primary_filters": [...], "join_filters": [...]}}}}
+   If two requested tables have no logical relationship or cannot be joined, output:
+   {{"action": "error", "params": {{"message": "Cannot join requested tables: no common relationship or join key found."}}}}
+
+12. FIELD PROJECTION (fields): If the query asks for specific fields/columns (e.g. "return name of 21CS003", "show name and email"), output "fields": ["name", ...] in the params object. If no specific fields are requested, omit "fields" so all columns are returned.
+
+13. Return ONLY a valid JSON object matching the schema:
    {{"action": "<action>", "table": "<table>", "params": {{<params>}}}}
-12. Do NOT output raw SQL or code. Output ONLY JSON.
+14. Do NOT output raw SQL or code. Output ONLY JSON.
 """
 
         user_content = json.dumps(lens_output)

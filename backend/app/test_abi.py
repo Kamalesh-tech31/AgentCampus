@@ -917,9 +917,11 @@ def test_f_03_delete_by_id_simple():
 
 @pytest.mark.batch3
 def test_f_04_delete_non_existent_row_id():
-    """Section F.4: Delete row with non-existent ID STU-NONEXIST-999 -> clean execution."""
+    """Section F.4: Delete row with non-existent ID STU-NONEXIST-999 -> clean execution with honest failure reporting."""
     plan, res = run_pipeline({"action": "delete_row", "table": "students", "params": {"row_id": "STU-NONEXIST-999"}})
-    assert res.get("success") is True
+    assert res.get("success") is False
+    assert res.get("rows_deleted", 0) == 0
+    assert "No matching row" in res.get("message", "")
 
 
 @pytest.mark.batch3

@@ -14,6 +14,19 @@ import json
 import tempfile
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def mock_schema_discovery(monkeypatch):
+    mock_cols = {
+        "students": {"id": "text", "rollNumber": "text", "name": "text", "department": "text", "cgpa": "numeric", "semester": "int", "attendance": "numeric", "email": "text", "status": "text", "backlogs": "int", "projectTitle": "text", "japaneseScore": "text", "phoneNumber": "text", "bloodGroup": "text"},
+        "courses": {"id": "text", "courseCode": "text", "title": "text", "department": "text", "credits": "int", "semester": "int", "instructor": "text", "syllabus": "text", "capacity": "int"},
+        "enrollments": {"id": "text", "studentId": "text", "courseCode": "text", "grade": "text", "enrolledAt": "timestamptz"},
+        "history": {"id": "text", "rowId": "text", "originalTable": "text", "action": "text", "oldData": "jsonb", "newData": "jsonb", "timestamp": "timestamptz"},
+    }
+    monkeypatch.setattr("app.db.schema.get_table_columns", lambda table_name, force_refresh=False: mock_cols.get(table_name.lower().rstrip("s"), mock_cols.get("students", {})))
+    monkeypatch.setattr("app.db.schema_registry.get_live_schema", lambda force_refresh=False: mock_cols)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers — build temp sample files
 # ─────────────────────────────────────────────────────────────────────────────

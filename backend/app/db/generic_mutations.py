@@ -203,19 +203,57 @@ def generic_insert(table: str, data: Dict[str, Any]) -> Dict[str, Any]:
     return inserted
 
 
+def _resolve_row_id(table: str, row_id: str) -> tuple[str, str]:
+    """
+    Resolves caller-provided row_id to the exact database column and primary key 'id'.
+    Primary path: checks eq("id", row_id). If matched, returns ("id", row_id).
+    Secondary fallback path:
+      - 'students' table: fallback to eq("rollNumber", row_id).
+      - 'courses' table: fallback to eq("courseCode", row_id).
+    Returns (match_column_name, primary_id_val).
+    If no match is found, returns ("id", row_id) so caller produces consistent "Row not found" error.
+    """
+    try:
+        res = supabase.table(table).select("id").eq("id", row_id).execute()
+        if res.data and len(res.data) > 0:
+            return ("id", res.data[0]["id"])
+    except Exception:
+        pass
+
+    fallback_col = None
+    if table.lower() == "students":
+        fallback_col = "rollNumber"
+    elif table.lower() == "courses":
+        fallback_col = "courseCode"
+
+    if fallback_col:
+        try:
+            res_fb = supabase.table(table).select("id", fallback_col).eq(fallback_col, row_id).execute()
+            if res_fb.data and len(res_fb.data) > 0:
+                real_id = res_fb.data[0]["id"]
+                logger.info(f"[GenericMutations] Resolved {table} natural key '{fallback_col}={row_id}' -> primary key id='{real_id}'")
+                return (fallback_col, real_id)
+        except Exception:
+            pass
+
+    return ("id", row_id)
+
+
 def generic_update(table: str, row_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Updates a row in table identified by row_id:
-    1. Validates keys against schema.
-    2. Executes update.
-    3. Verifies updated fields empirically in DB.
+    Updates a row in table identified by row_id (or natural key fallback rollNumber / courseCode):
+    1. Resolves row_id to primary key id.
+    2. Validates keys against schema.
+    3. Executes update.
+    4. Verifies updated fields empirically in DB.
     """
+    match_col, real_id = _resolve_row_id(table, row_id)
     _validate_payload_keys(table, data)
-    response = supabase.table(table).update(data).eq("id", row_id).execute()
+    response = supabase.table(table).update(data).eq("id", real_id).execute()
     updated = response.data[0] if response.data else data
 
     # Empirical DB state verification
-    verify = supabase.table(table).select("*").eq("id", row_id).execute()
+    verify = supabase.table(table).select("*").eq("id", real_id).execute()
     if not verify.data:
         raise RuntimeError(f"Update verification failed: Row '{row_id}' not found in '{table}' after update.")
 
@@ -231,21 +269,96 @@ def generic_update(table: str, row_id: str, data: Dict[str, Any]) -> Dict[str, A
     return updated
 
 
-def generic_delete(table: str, row_id: str) -> bool:
+def generic_delete(
+    table: str,
+    row_id: Optional[str] = None,
+    filters: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
     """
-    Deletes a row from table identified by row_id:
-    1. Executes delete.
-    2. Verifies row no longer exists in DB.
+    Deletes row(s) from table:
+    - If row_id is provided: resolves row_id and deletes the target row.
+    - If filters is provided: applies filters and deletes matching rows.
+    Verifies the actual number of rows deleted from Supabase.
+    Returns: {"success": bool, "deleted": bool, "rows_deleted": int, "data": List[Dict], "message": str}
     """
-    get_known_fields(table)
-    supabase.table(table).delete().eq("id", row_id).execute()
+    schema = get_known_fields(table)
 
-    # Empirical DB state verification
-    verify = supabase.table(table).select("id").eq("id", row_id).execute()
-    if verify.data and len(verify.data) > 0:
-        raise RuntimeError(f"Delete verification failed: Row '{row_id}' still present in '{table}' after deletion.")
+    if not row_id and not filters:
+        raise ValueError(f"Delete operation on table '{table}' requires either 'row_id' or 'filters'.")
 
-    return True
+    if row_id:
+        match_col, real_id = _resolve_row_id(table, row_id)
+        # Verify if target row actually exists
+        exists_check = supabase.table(table).select("id").eq("id", real_id).execute()
+        if not exists_check.data:
+            return {
+                "success": False,
+                "deleted": False,
+                "rows_deleted": 0,
+                "data": [],
+                "message": f"No matching row found to delete in table '{table}' with {match_col}='{row_id}'.",
+            }
+
+        res = supabase.table(table).delete(count="exact").eq("id", real_id).execute()
+        deleted_rows = res.data or []
+        rows_deleted = res.count if res.count is not None else len(deleted_rows)
+
+        if rows_deleted == 0:
+            return {
+                "success": False,
+                "deleted": False,
+                "rows_deleted": 0,
+                "data": [],
+                "message": f"No matching row found to delete in table '{table}' with {match_col}='{row_id}'.",
+            }
+
+        # Empirical DB state verification
+        verify = supabase.table(table).select("id").eq("id", real_id).execute()
+        if verify.data and len(verify.data) > 0:
+            raise RuntimeError(f"Delete verification failed: Row '{row_id}' still present in '{table}' after deletion.")
+
+        return {
+            "success": True,
+            "deleted": True,
+            "rows_deleted": rows_deleted,
+            "data": deleted_rows,
+            "message": f"Successfully deleted {rows_deleted} row(s) from {table}.",
+        }
+
+    # Filter-based deletion
+    query = supabase.table(table).delete(count="exact")
+    allowed_ops = {"eq", "neq", "gt", "gte", "lt", "lte", "like", "ilike", "is_", "in_"}
+    for f in filters:
+        f_field = f.get("field")
+        f_op = f.get("op", "eq")
+        f_val = f.get("value")
+        if not f_field or f_field not in schema:
+            raise ValueError(f"Field '{f_field}' is not registered for table '{table}'.")
+        if f_op not in allowed_ops:
+            raise ValueError(f"Operator '{f_op}' is not allowed.")
+        filter_func = getattr(query, f_op)
+        query = filter_func(f_field, f_val)
+
+    res = query.execute()
+    deleted_rows = res.data or []
+    rows_deleted = res.count if res.count is not None else len(deleted_rows)
+
+    if rows_deleted == 0:
+        return {
+            "success": False,
+            "deleted": False,
+            "rows_deleted": 0,
+            "data": [],
+            "message": f"No matching row(s) found to delete in table '{table}'.",
+        }
+
+    return {
+        "success": True,
+        "deleted": True,
+        "rows_deleted": rows_deleted,
+        "data": deleted_rows,
+        "message": f"Successfully deleted {rows_deleted} row(s) from {table}.",
+    }
 
 
 def bulk_update(
@@ -340,30 +453,39 @@ def generic_bulk_insert(table: str, records: List[Dict[str, Any]]) -> List[Dict[
 def generic_restore(table: str, row_id: str) -> Dict[str, Any]:
     """
     Restores/reverts a row to its pre-update or pre-delete state using the most recent 'oldData' snapshot in history table:
-    1. Looks up the most recent history entry for row_id on table.
-    2. Reads 'oldData' from that history record.
-    3. Validates 'oldData' fields against live schema (filters out columns dropped since history entry).
-    4. If row exists in live table (pre-update revert), updates row with oldData.
-    5. If row does not exist in live table (pre-delete revert), re-inserts oldData back into live table.
-    6. Returns dict with success status, restored row data, and clear message.
+    1. Resolves row_id to primary key id.
+    2. Looks up the most recent history entry for row_id on table.
+    3. Reads 'oldData' from that history record.
+    4. Validates 'oldData' fields against live schema (filters out columns dropped since history entry).
+    5. If row exists in live table (pre-update revert), updates row with oldData.
+    6. If row does not exist in live table (pre-delete revert), re-inserts oldData back into live table.
+    7. Returns dict with success status, restored row data, and clear message.
     """
-    # 1. Fetch most recent history entry for row_id on table (order by timestamp or id desc)
-    try:
-        hist_res = (
-            supabase.table("history")
-            .select("*")
-            .eq("rowId", row_id)
-            .order("timestamp", desc=True)
-            .execute()
-        )
-    except Exception:
-        hist_res = (
-            supabase.table("history")
-            .select("*")
-            .eq("rowId", row_id)
-            .order("id", desc=True)
-            .execute()
-        )
+    match_col, target_id = _resolve_row_id(table, row_id)
+    search_ids = list(dict.fromkeys([row_id, target_id]))
+
+    # 1. Fetch most recent history entry for row_id or target_id on table
+    history_records = []
+    for sid in search_ids:
+        try:
+            hist_res = (
+                supabase.table("history")
+                .select("*")
+                .eq("rowId", sid)
+                .order("timestamp", desc=True)
+                .execute()
+            )
+        except Exception:
+            hist_res = (
+                supabase.table("history")
+                .select("*")
+                .eq("rowId", sid)
+                .order("id", desc=True)
+                .execute()
+            )
+        if hist_res.data:
+            history_records.extend(hist_res.data)
+            break
 
     history_records = hist_res.data or []
     if not history_records:
