@@ -40,7 +40,13 @@ class MotherAgent:
             registry = AgentRegistry()
         self.registry = registry
         self.task_manager = TaskManager()
-        self.groq_service = groq_service or GroqService()
+        if groq_service is None:
+            import os
+            groq_service = GroqService(
+                api_key=os.getenv("MOTHER_GROQ_API_KEY"),
+                model=os.getenv("MOTHER_GROQ_MODEL", "llama-3.3-70b-versatile"),
+            )
+        self.groq_service = groq_service
 
     def classify_intent(self, prompt: str) -> DynamicPlanRequestType:
         prompt_lower = prompt.lower()
@@ -101,6 +107,9 @@ class MotherAgent:
 
         if "db" not in completed_agents:
             return "db"
+
+        if workflow.results.get("db", {}).get("requires_confirmation"):
+            return None
 
         plan_agents = [s.agent for s in workflow.plan.steps] if workflow.plan else []
         requires_analytics = (
@@ -322,11 +331,17 @@ class MotherAgent:
                 )
 
                 data_raw = result_dict.get("data") or workflow.results.get("db", {}).get("records")
-                data = (
-                    [StudentRecord.model_validate(r) for r in data_raw]
-                    if (isinstance(data_raw, list) and data_raw and isinstance(data_raw[0], dict))
-                    else None
-                )
+                data = None
+                if isinstance(data_raw, list) and data_raw:
+                    parsed_records = []
+                    for r in data_raw:
+                        if isinstance(r, dict):
+                            try:
+                                parsed_records.append(StudentRecord.model_validate(r))
+                            except Exception:
+                                pass
+                    if parsed_records:
+                        data = parsed_records
 
                 metrics_raw = result_dict.get("metrics") or workflow.results.get("analytics", {}).get("metrics")
                 metrics = (
@@ -485,5 +500,38 @@ class MotherAgent:
                     )
                 )
                 break
+
+        if workflow.final_result is None:
+            failed_task = next((t for t in workflow.task_history if t.status == "failed"), None)
+            err_msg = (
+                f"Agent {failed_task.agent} failed during workflow execution."
+                if failed_task
+                else "Workflow execution failed."
+            )
+            is_rate_limit = any(
+                "rate limit" in str(getattr(e, "message", "")).lower() or "429" in str(getattr(e, "message", ""))
+                for e in workflow.events
+            )
+            err_type = "RATE_LIMITED" if is_rate_limit else "AGENT_EXECUTION_ERROR"
+            display_msg = (
+                "The AI service rate limit has been reached. Please try again later."
+                if is_rate_limit
+                else err_msg
+            )
+            workflow.final_result = OrchestrationResult(
+                summary=display_msg,
+                query_executed=None,
+                raw_plan=workflow.plan,
+                output_format="text",
+                mode=workflow.mode,
+                success=False,
+                error_type=err_type,
+                execution={
+                    "agents": [
+                        {"agent": t.agent, "status": t.status}
+                        for t in workflow.task_history
+                    ]
+                },
+            )
 
         return workflow

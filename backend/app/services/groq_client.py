@@ -33,19 +33,30 @@ def call_groq_completion(
     """
     import groq
 
-    # Collect all configured GROQ_API_KEY environment variables
+    # Collect all configured DB_GROQ_API_KEY environment variables (DB_GROQ_API_KEY, DB_GROQ_API_KEY_1..4)
     keys_to_try = []
-    for k, v in os.environ.items():
-        if k.startswith("GROQ_API_KEY") and v.strip():
-            keys_to_try.append((k, v.strip()))
+    
+    # 1. Primary DB API key
+    primary_db_key = os.getenv("DB_GROQ_API_KEY")
+    if primary_db_key and primary_db_key.strip():
+        keys_to_try.append(("DB_GROQ_API_KEY", primary_db_key.strip()))
 
-    keys_to_try.sort(key=lambda x: x[0])
+    # 2. Fallback DB keys: DB_GROQ_API_KEY_1, DB_GROQ_API_KEY_2, etc.
+    fallback_keys = []
+    for k, v in os.environ.items():
+        if k.startswith("DB_GROQ_API_KEY_") and v.strip():
+            fallback_keys.append((k, v.strip()))
+
+    fallback_keys.sort(key=lambda x: x[0])
+    for item in fallback_keys:
+        if item not in keys_to_try:
+            keys_to_try.append(item)
 
     if not keys_to_try:
-        logger.warning("[GroqFallback] No Groq API keys configured in environment.")
-        raise RuntimeError("GROQ_API_KEY not configured in environment.")
+        logger.warning("[GroqFallback] No DB Groq API keys configured in environment.")
+        raise RuntimeError("DB_GROQ_API_KEY not configured in environment.")
 
-    primary_model = model or os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    primary_model = model or os.getenv("DB_GROQ_MODEL", "llama-3.3-70b-versatile")
     models_to_try = [primary_model]
     for m in GROQ_MODEL_FALLBACK_CHAIN:
         if m not in models_to_try:

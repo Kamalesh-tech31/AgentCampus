@@ -65,14 +65,22 @@ class DBAgent(BaseAgent):
         if parsed_records:
             return self._execute_file_parsed_flow(task, structured_intent, parsed_records)
 
-        # Legacy backward compatibility check: if no "table" key AND contains legacy structured intent fields
-        is_legacy = "table" not in structured_intent and "table" not in task.input_data and any(
-            k in structured_intent for k in ("department", "min_cgpa", "status_filter")
+        # Main Vault DB Agent flow (Supabase live DB via vault_llm_plan and execute_plan)
+        query_str = (
+            task.input_data.get("user_query")
+            or task.input_data.get("query")
+            or task.input_data.get("prompt")
+            or (input_result.get("raw_query") if isinstance(input_result, dict) else "")
+            or ""
+        )
+
+        # Legacy backward compatibility check: only if no query text was provided and non-null legacy structured intent fields are present
+        is_legacy = not query_str.strip() and "table" not in structured_intent and "table" not in task.input_data and any(
+            structured_intent.get(k) is not None for k in ("department", "min_cgpa", "status_filter")
         )
         if is_legacy:
             return self._legacy_dispatch(task, structured_intent)
 
-        # Main Vault DB Agent flow (Supabase live DB via vault_llm_plan and execute_plan)
         plan = vault_llm_plan(task.input_data)
         action = plan.get("action", "")
         table = plan.get("table", "students")

@@ -34,7 +34,17 @@ def _build_final_result(workflow: WorkflowState) -> OrchestrationResult:
 
     # Parse validated StudentRecord list if present
     data_raw = result_dict.get("data", [])
-    data = [StudentRecord.model_validate(r) for r in data_raw] if data_raw else None
+    data = None
+    if isinstance(data_raw, list) and data_raw:
+        parsed_records = []
+        for r in data_raw:
+            if isinstance(r, dict):
+                try:
+                    parsed_records.append(StudentRecord.model_validate(r))
+                except Exception:
+                    pass
+        if parsed_records:
+            data = parsed_records
 
     # Parse OrchestrationMetrics if analytics ran
     metrics_raw = result_dict.get("metrics")
@@ -135,14 +145,40 @@ class CrewAdapter:
         failed_tasks = [t for t in workflow.task_history if t.status == "failed"]
         if failed_tasks:
             workflow.status = "failed"
+            failed_agent = failed_tasks[0].agent
+            is_rate_limit = any(
+                "rate limit" in str(getattr(e, "message", "")).lower() or "429" in str(getattr(e, "message", ""))
+                for e in workflow.events
+            )
+            err_type = "RATE_LIMITED" if is_rate_limit else "AGENT_EXECUTION_ERROR"
+            display_msg = (
+                "The AI service rate limit has been reached. Please try again later."
+                if is_rate_limit
+                else f"Task {failed_agent} failed during workflow execution."
+            )
             workflow.events.append(
                 OrchestrationEvent(
                     type="AGENT_FAILED",
                     task_id=workflow.workflow_id,
                     timestamp=time.time(),
-                    agent_id=failed_tasks[0].agent,
-                    message=f"Task {failed_tasks[0].agent} failed during CrewAI Flow execution",
+                    agent_id=failed_agent,
+                    message=display_msg,
                 )
+            )
+            workflow.final_result = OrchestrationResult(
+                summary=display_msg,
+                query_executed=None,
+                raw_plan=workflow.plan,
+                output_format="text",
+                mode=workflow.mode,
+                success=False,
+                error_type=err_type,
+                execution={
+                    "agents": [
+                        {"agent": t.agent, "status": t.status}
+                        for t in workflow.task_history
+                    ]
+                },
             )
             return workflow
 

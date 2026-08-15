@@ -219,9 +219,12 @@ def generate_text(
     Returns:
         A multi-line string ready for display.
     """
-    # ── Attempt LLM Generation ───────────────────────────────────────────────────
     from app.services.groq_service import GroqService
-    groq_svc = GroqService()
+    import os
+    groq_svc = GroqService(
+        api_key=os.getenv("SCRIBE_GROQ_API_KEY"),
+        model=os.getenv("SCRIBE_GROQ_MODEL", "llama-3.3-70b-versatile"),
+    )
 
     # Build data summary for the LLM
     summary_data = {}

@@ -6,9 +6,10 @@ from app.mother.state import WorkflowState
 
 
 def test_missing_groq_configuration(monkeypatch):
-    """When GROQ_API_KEY is absent, GroqService returns None and MotherAgent falls back safely."""
+    """When MOTHER_GROQ_API_KEY is absent, GroqService returns None and MotherAgent falls back safely."""
+    monkeypatch.delenv("MOTHER_GROQ_API_KEY", raising=False)
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
-    service = GroqService()
+    service = GroqService(api_key=None)
     assert service.client is None
 
     plan = service.generate_plan("Show top 10 CS students")

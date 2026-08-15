@@ -61,6 +61,10 @@ class OrchestrationResult(CamelModel):
     requires_confirmation: Optional[bool] = False
     confirmation_details: Optional[Dict[str, Any]] = None
     execution: Optional[Dict[str, Any]] = None
+    # Error & rate-limit handling fields
+    success: Optional[bool] = True
+    error_type: Optional[str] = None      # "RATE_LIMITED" | "VALIDATION_ERROR" | "DATABASE_ERROR" | "INTERNAL_SERVER_ERROR"
+    retry_after: Optional[str] = None
 
 
 

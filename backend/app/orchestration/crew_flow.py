@@ -171,6 +171,8 @@ class AgentCampusFlow(Flow[FlowState]):
         # Strictly check MotherAgent's plan — never independently add analytics
         if not any(s.agent == "analytics" for s in wf.plan.steps):
             return
+        if self.state.step_results.get("db", {}).get("requires_confirmation"):
+            return
 
         self._emit(OrchestrationEvent(
             type="AGENT_STARTED",
@@ -216,6 +218,8 @@ class AgentCampusFlow(Flow[FlowState]):
     def execute_output_step(self):
         wf = self.state.workflow
         if not wf or not wf.plan:
+            return
+        if self.state.step_results.get("db", {}).get("requires_confirmation"):
             return
         if not any(s.agent == "output" for s in wf.plan.steps):
             return

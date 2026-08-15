@@ -15,15 +15,40 @@ def orchestrate_sync(req: OrchestrationRequest):
     - Mode: modify | explore | analyze
     - Returns structured execution tracking, result, output format/file, and confirmation state.
     """
-    query = req.get_query()
-    mother = MotherAgent()
-    workflow = mother.create_workflow(
-        prompt=query,
-        mode=req.mode,
-        confirmed=bool(req.confirmed),
-    )
-    result_wf = mother.execute_workflow(workflow)
-    return result_wf.final_result
+    try:
+        query = req.get_query()
+        mother = MotherAgent()
+        workflow = mother.create_workflow(
+            prompt=query,
+            mode=req.mode,
+            confirmed=bool(req.confirmed),
+        )
+        result_wf = mother.execute_workflow(workflow)
+        if result_wf.final_result is None:
+            return OrchestrationResult(
+                summary="Workflow executed but returned no result.",
+                success=False,
+                error_type="INTERNAL_SERVER_ERROR",
+                mode=req.mode,
+                output_format="text",
+            )
+        return result_wf.final_result
+    except Exception as exc:
+        err_str = str(exc)
+        is_rate_limit = "429" in err_str or "rate limit" in err_str.lower() or "quota" in err_str.lower()
+        err_type = "RATE_LIMITED" if is_rate_limit else "INTERNAL_SERVER_ERROR"
+        msg = (
+            "The AI service rate limit has been reached. Please try again later."
+            if is_rate_limit
+            else f"Request processing error: {err_str}"
+        )
+        return OrchestrationResult(
+            summary=msg,
+            success=False,
+            error_type=err_type,
+            mode=req.mode,
+            output_format="text",
+        )
 
 
 async def _sse_event_generator(

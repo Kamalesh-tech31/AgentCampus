@@ -67,8 +67,8 @@ class GroqService:
         api_key: Optional[str] = None,
         model: Optional[str] = None,
     ):
-        self.api_key = api_key or os.getenv("GROQ_API_KEY")
-        self.model = model or os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+        self.api_key = api_key or os.getenv("MOTHER_GROQ_API_KEY")
+        self.model = model or os.getenv("MOTHER_GROQ_MODEL", "llama-3.3-70b-versatile")
         self.client = None
         if self.api_key:
             try:
@@ -403,8 +403,9 @@ class GroqService:
                 f"No markdown. No explanation. JSON only."
             )
 
+            vision_model = self.model if (self.model and "qwen" in self.model) else os.getenv("INPUT_GROQ_MODEL", "qwen/qwen3.6-27b")
             response = self.client.chat.completions.create(
-                model="qwen/qwen3.6-27b",
+                model=vision_model,
                 messages=[
                     {
                         "role": "system",

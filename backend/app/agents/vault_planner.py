@@ -37,16 +37,27 @@ def _deterministic_fallback_plan(lens_output: Dict[str, Any]) -> Dict[str, Any]:
     Fallback planner when Groq API keys are exhausted or unavailable.
     Constructs deterministic plan from structured input dictionary.
     """
-    action = lens_output.get("action")
+    input_intent = lens_output.get("input", {}).get("structured_intent", {}) if isinstance(lens_output.get("input"), dict) else (lens_output.get("structured_intent", {}) if isinstance(lens_output.get("structured_intent"), dict) else {})
+    action = lens_output.get("action") or input_intent.get("action")
     query = str(
         lens_output.get("query")
         or lens_output.get("user_query")
         or lens_output.get("prompt")
         or (lens_output.get("input", {}).get("user_query") if isinstance(lens_output.get("input"), dict) else "")
+        or input_intent.get("original_query")
+        or input_intent.get("query")
         or ""
     ).lower()
-    tbl = lens_output.get("table", "students")
-    params = lens_output.get("params", {})
+    tbl = lens_output.get("table") or input_intent.get("table") or "students"
+    params = lens_output.get("params") or input_intent.get("params") or {}
+    if not params.get("filters") and input_intent.get("filters"):
+        raw_flts = input_intent.get("filters", [])
+        norm_flts = []
+        for f in raw_flts:
+            op_str = f.get("operator") or f.get("op", "eq")
+            op_map = {"<": "lt", "<=": "lte", ">": "gt", ">=": "gte", "=": "eq", "==": "eq"}
+            norm_flts.append({"field": f.get("field"), "op": op_map.get(op_str, op_str), "value": f.get("value")})
+        params["filters"] = norm_flts
 
 
     cols = get_table_columns(tbl)
@@ -354,7 +365,7 @@ def vault_llm_plan(lens_output: Dict[str, Any]) -> Dict[str, Any]:
         }, lens_output)
 
     try:
-        model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+        model = os.getenv("DB_GROQ_MODEL", "llama-3.3-70b-versatile")
         live_schema = get_live_schema(force_refresh=True)
         schema_repr = json.dumps(live_schema, indent=2)
         actions_repr = ", ".join(ALLOWED_ACTIONS)

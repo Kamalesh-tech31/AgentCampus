@@ -285,6 +285,42 @@ export default function App() {
         return;
       }
 
+      if (res.success === false) {
+        const isRateLimit = res.errorType === 'RATE_LIMITED' || res.summary?.toLowerCase().includes('rate limit');
+        const failedAgents: Record<AgentType, AgentState> = JSON.parse(JSON.stringify(INITIAL_AGENTS));
+        failedAgents.input.status = 'complete';
+        failedAgents.mother.status = 'failed';
+        failedAgents.mother.statusMessage = isRateLimit ? 'AI service rate limit reached.' : 'Workflow execution failed.';
+
+        setThreads(prev =>
+          prev.map(t => {
+            if (t.id === selectedThreadId) {
+              const updatedTurns = t.turns.map(tn => {
+                if (tn.id === newTurnId) {
+                  return {
+                    ...tn,
+                    status: 'failed' as any,
+                    result: res,
+                    plan: res.rawPlan,
+                    agents: failedAgents,
+                  };
+                }
+                return tn;
+              });
+              return { ...t, turns: updatedTurns };
+            }
+            return t;
+          })
+        );
+        showToast(
+          isRateLimit
+            ? 'AI service limit reached. Please try again after a few moments.'
+            : (res.summary || 'Backend execution failed.'),
+          'error'
+        );
+        return;
+      }
+
       // Populate actual agent completion statuses based on backend execution
       const completedAgents: Record<AgentType, AgentState> = JSON.parse(JSON.stringify(INITIAL_AGENTS));
       completedAgents.input.status = 'complete';

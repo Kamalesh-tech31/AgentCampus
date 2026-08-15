@@ -140,6 +140,9 @@ export interface OrchestrationResult {
   rawPlan?: DynamicPlan;
   structuredIntent?: any;
   csvData?: string;
+  success?: boolean;
+  errorType?: string;
+  retryAfter?: string;
 }
 
 export interface OrchestrationEvent {

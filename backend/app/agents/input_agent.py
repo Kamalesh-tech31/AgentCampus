@@ -1061,7 +1061,14 @@ class InputAgent(BaseAgent):
             # Initialise GroqService only for image files
             import os
             ext = os.path.splitext(file_path)[1].lower()
-            groq_svc = GroqService() if ext in (".png", ".jpg", ".jpeg") else None
+            groq_svc = (
+                GroqService(
+                    api_key=os.getenv("INPUT_GROQ_API_KEY"),
+                    model=os.getenv("INPUT_GROQ_MODEL", "qwen/qwen3.6-27b"),
+                )
+                if ext in (".png", ".jpg", ".jpeg")
+                else None
+            )
 
             parsed = parse_file(file_path, groq_service=groq_svc, query=remaining_query)
 
