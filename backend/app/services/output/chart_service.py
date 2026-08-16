@@ -187,10 +187,131 @@ def department_breakdown_chart(dept_breakdown: dict) -> Optional[bytes]:
         return None
 
 
+def ranking_bar_chart(top_records: list[dict], title: str = "Top Performers by Weighted Score") -> Optional[bytes]:
+    """
+    Render a horizontal bar chart of top performing students with weighted score values.
+    Top 3 performers receive gold/silver/bronze accent colors.
+    """
+    if not _MATPLOTLIB_AVAILABLE or not top_records:
+        return None
+
+    try:
+        # Reverse list so rank 1 is at the top of horizontal chart
+        recs = list(reversed(top_records[:15]))
+        names = [f"#{r.get('rank', i+1)} {r.get('name', r.get('rollNumber', 'Student'))}" for i, r in enumerate(recs)]
+        scores = [float(r.get('_weighted_score', r.get('weighted_score', 0.0))) for r in recs]
+        ranks = [r.get('rank', len(recs) - i) for i, r in enumerate(recs)]
+
+        fig, ax = plt.subplots(figsize=(8.5, max(4.0, len(names) * 0.42)))
+
+        # Color ranking bars: Gold for Rank 1, Silver for Rank 2, Bronze for Rank 3, Deep Blue for others
+        colors = []
+        for rk in ranks:
+            if rk == 1:
+                colors.append("#D4AF37")  # Gold
+            elif rk == 2:
+                colors.append("#A8A8A8")  # Silver
+            elif rk == 3:
+                colors.append("#CD7F32")  # Bronze
+            else:
+                colors.append("#2E75B6")  # Mid Blue
+
+        bars = ax.barh(range(len(names)), scores, color=colors, edgecolor="white", height=0.62)
+
+        ax.set_yticks(range(len(names)))
+        ax.set_yticklabels(names, fontsize=8.5, fontweight="bold")
+        ax.set_xlabel("Weighted Score (Out of 100)", fontsize=9.5, fontweight="bold")
+        ax.set_title(title, fontsize=12, fontweight="bold", pad=12)
+        ax.set_xlim(0, 105)
+        ax.grid(axis="x", linestyle="--", alpha=0.3, color="#BFBFBF")
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+        for bar, val in zip(bars, scores):
+            ax.text(
+                bar.get_width() + 0.8, bar.get_y() + bar.get_height() / 2,
+                f"{val:.2f}", va="center", fontsize=8, fontweight="bold", color="#1F4E79"
+            )
+
+        fig.tight_layout()
+        return _png_bytes(fig)
+
+    except Exception as exc:
+        logger.error(f"[ChartService] ranking_bar_chart error: {exc}")
+        return None
+
+
+def scatter_plot_chart(
+    points: list[dict],
+    x_label: str = "X",
+    y_label: str = "Y",
+    title: str = "Correlation Scatter Plot",
+    correlation: Optional[float] = None,
+    r_squared: Optional[float] = None,
+    regression: Optional[dict] = None,
+) -> Optional[bytes]:
+    """
+    Render a high-resolution scatter plot with optional linear regression trend line.
+    """
+    if not _MATPLOTLIB_AVAILABLE or not points or len(points) < 2:
+        return None
+
+    try:
+        x_vals = [float(p.get("x", 0.0)) for p in points if p.get("x") is not None and p.get("y") is not None]
+        y_vals = [float(p.get("y", 0.0)) for p in points if p.get("x") is not None and p.get("y") is not None]
+
+        if len(x_vals) < 2:
+            return None
+
+        fig, ax = plt.subplots(figsize=(8.5, 4.8))
+
+        # Scatter points
+        ax.scatter(x_vals, y_vals, color="#2e75b6", alpha=0.75, edgecolors="#1b4f72", s=45, label="Student Observations")
+
+        # Trend line if regression data provided
+        if regression and "slope" in regression and "intercept" in regression:
+            slope = float(regression["slope"])
+            intercept = float(regression["intercept"])
+            min_x, max_x = min(x_vals), max(x_vals)
+            line_x = [min_x, max_x]
+            line_y = [(slope * min_x) + intercept, (slope * max_x) + intercept]
+            ax.plot(line_x, line_y, color="#c00000", linewidth=2.0, linestyle="--", label=f"Linear Fit: y = {slope:.2f}x + {intercept:.2f}")
+
+        ax.set_xlabel(x_label, fontsize=10, fontweight="bold", labelpad=8)
+        ax.set_ylabel(y_label, fontsize=10, fontweight="bold", labelpad=8)
+        ax.set_title(title, fontsize=12, fontweight="bold", pad=12)
+
+        # Callout text box with statistical summary
+        stat_text = []
+        if correlation is not None:
+            stat_text.append(f"r = {correlation:.4f}")
+        if r_squared is not None:
+            stat_text.append(f"R² = {r_squared:.4f}")
+        stat_text.append(f"N = {len(x_vals)}")
+
+        if stat_text:
+            bbox_props = dict(boxstyle="round,pad=0.5", facecolor="#f8f9fa", edgecolor="#d5dbdb", alpha=0.9)
+            ax.text(
+                0.03, 0.95, "\n".join(stat_text),
+                transform=ax.transAxes, fontsize=9, va="top", bbox=bbox_props
+            )
+
+        ax.grid(True, linestyle=":", alpha=0.6, color="#bdc3c7")
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.legend(loc="lower right", fontsize=8)
+
+        fig.tight_layout()
+        return _png_bytes(fig)
+    except Exception as exc:
+        logger.error(f"[ChartService] scatter_plot_chart error: {exc}")
+        return None
+
+
 def render_dynamic_chart(chart_info: dict) -> Optional[bytes]:
     """
     Render any chart from the Pulse dynamic chart_data format.
-    Supports bar and pie charts.
+    Supports scatter plots, ranking bar charts, risk factor bars, severity pies, and comparison bar charts.
     """
     if not _MATPLOTLIB_AVAILABLE or not chart_info:
         return None
@@ -198,6 +319,19 @@ def render_dynamic_chart(chart_info: dict) -> Optional[bytes]:
     try:
         chart_type = chart_info.get("type")
         title = chart_info.get("title", "Chart")
+
+        # 1. Scatter plot handler
+        if chart_type == "scatter":
+            return scatter_plot_chart(
+                points=chart_info.get("points", []),
+                x_label=chart_info.get("x_label", "X"),
+                y_label=chart_info.get("y_label", "Y"),
+                title=title,
+                correlation=chart_info.get("correlation"),
+                r_squared=chart_info.get("r_squared"),
+                regression=chart_info.get("regression"),
+            )
+
         labels = chart_info.get("labels", [])
         values = chart_info.get("values", [])
 
@@ -212,25 +346,59 @@ def render_dynamic_chart(chart_info: dict) -> Optional[bytes]:
         labels = list(labels)
         values = list(values)
 
-        fig, ax = plt.subplots(figsize=(8, 4))
+        if "weighted" in title.lower() or "rank" in title.lower():
+            records_dummy = [{"name": l, "_weighted_score": v, "rank": i + 1} for i, (l, v) in enumerate(zip(labels, values))]
+            return ranking_bar_chart(records_dummy, title=title)
+
+        fig, ax = plt.subplots(figsize=(8, 4.2))
 
         if chart_type == "pie":
-            # Distinct colors matching our theme (red/orange for risk, green for safe, etc.)
-            pie_colors = ["#c00000", "#2e75b6", "#27ae60", "#f39c12", "#8e44ad"][:len(labels)]
-            ax.pie(values, labels=labels, autopct="%1.1f%%", startangle=90, colors=pie_colors,
-                   textprops={'fontsize': 8})
+            # Map specific colors if severity labels
+            sev_color_map = {
+                "Critical": "#C00000",
+                "High": "#E74C3C",
+                "Moderate": "#E67E22",
+                "Low": "#F1C40F",
+                "Safe": "#27AE60",
+                "At Risk": "#C00000",
+            }
+            pie_colors = [sev_color_map.get(str(l), "#2e75b6") for l in labels]
+            ax.pie(
+                values,
+                labels=labels,
+                autopct="%1.1f%%",
+                startangle=140,
+                colors=pie_colors,
+                textprops={'fontsize': 8.5, 'fontweight': 'bold'},
+                wedgeprops={'edgecolor': 'white', 'linewidth': 1.2},
+            )
             ax.axis("equal")
         else:
             # Bar chart
-            bar_colors = ["#2e75b6"] * len(labels)
-            if "risk" in title.lower():
-                bar_colors = ["#c00000" if "risk" in str(l).lower() else "#2e75b6" for l in labels]
-            ax.bar(labels, values, color=bar_colors, edgecolor="white", width=0.5)
-            ax.set_ylabel(chart_info.get("y_label", "Value"), fontsize=9)
-            ax.set_xlabel(chart_info.get("x_label", "Category"), fontsize=9)
-            ax.spines["top"].set_visible(False)
-            ax.spines["right"].set_visible(False)
-            plt.xticks(rotation=15, ha="right", fontsize=8)
+            if "risk factor" in title.lower() or "prevalence" in title.lower():
+                # Horizontal bar chart for risk factors
+                fig, ax = plt.subplots(figsize=(8.5, max(3.5, len(labels) * 0.6)))
+                bar_colors = ["#C00000", "#E74C3C", "#E67E22", "#8E44AD", "#D35400"][:len(labels)]
+                bars = ax.barh(range(len(labels)), values, color=bar_colors, edgecolor="white", height=0.55)
+                ax.set_yticks(range(len(labels)))
+                ax.set_yticklabels(labels, fontsize=8.5, fontweight="bold")
+                ax.set_xlabel("Number of Affected Students", fontsize=9, fontweight="bold")
+                ax.spines["top"].set_visible(False)
+                ax.spines["right"].set_visible(False)
+                for bar, val in zip(bars, values):
+                    ax.text(bar.get_width() + 0.5, bar.get_y() + bar.get_height() / 2, f"{int(val)}", va="center", fontsize=8, fontweight="bold")
+            else:
+                bar_colors = ["#2e75b6"] * len(labels)
+                if "risk" in title.lower() or "at-risk" in title.lower():
+                    bar_colors = ["#C00000" if "risk" in str(l).lower() or "at risk" in str(l).lower() else "#2e75b6" for l in labels]
+                bars = ax.bar(labels, values, color=bar_colors, edgecolor="white", width=0.5)
+                ax.set_ylabel(chart_info.get("y_label", "Value"), fontsize=9, fontweight="bold")
+                ax.set_xlabel(chart_info.get("x_label", "Category"), fontsize=9, fontweight="bold")
+                ax.spines["top"].set_visible(False)
+                ax.spines["right"].set_visible(False)
+                plt.xticks(rotation=15, ha="right", fontsize=8)
+                for bar, val in zip(bars, values):
+                    ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.2, f"{val:.1f}" if isinstance(val, float) else f"{val}", ha="center", va="bottom", fontsize=7.5)
 
         ax.set_title(title, fontsize=11, fontweight="bold", pad=15)
         fig.tight_layout()

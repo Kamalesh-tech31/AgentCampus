@@ -173,3 +173,168 @@ def test_scribe_agent_key_wiring_ppt():
             assert file_info is not None
             assert file_info.get("file_name", "").endswith(".pptx")
             assert mock_plan.called
+
+
+def test_fallback_case_1_primary_key_succeeds():
+    """CASE 1: Primary key succeeds -> exactly 1 LLM request, no fallback."""
+    env = {
+        "DB_GROQ_API_KEY": "key-primary",
+        "DB_GROQ_API_KEY_1": "key-fallback-1",
+        "DB_GROQ_MODEL": "llama-3.3-70b-versatile",
+    }
+    with patch.dict(os.environ, env, clear=True):
+        with patch("groq.Groq") as mock_groq_cls:
+            mock_client = MagicMock()
+            mock_resp = MagicMock()
+            mock_resp.choices = [MagicMock()]
+            mock_resp.choices[0].message.content = '{"action": "get_all_rows"}'
+            mock_client.chat.completions.create.return_value = mock_resp
+            mock_groq_cls.return_value = mock_client
+
+            res = call_groq_completion(messages=[{"role": "user", "content": "hi"}])
+            assert res == '{"action": "get_all_rows"}'
+            assert mock_groq_cls.call_count == 1
+            assert mock_groq_cls.call_args[1]["api_key"] == "key-primary"
+
+
+def test_fallback_case_2_primary_429_fallback_succeeds():
+    """CASE 2: Primary key returns 429 -> fallback key succeeds, no further keys tried."""
+    env = {
+        "DB_GROQ_API_KEY": "key-primary",
+        "DB_GROQ_API_KEY_1": "key-fallback-1",
+        "DB_GROQ_API_KEY_2": "key-fallback-2",
+        "DB_GROQ_MODEL": "llama-3.3-70b-versatile",
+    }
+    with patch.dict(os.environ, env, clear=True):
+        with patch("groq.Groq") as mock_groq_cls:
+            primary_client = MagicMock()
+            primary_client.chat.completions.create.side_effect = Exception("429 Rate limit reached for model")
+
+            fallback_client = MagicMock()
+            mock_resp = MagicMock()
+            mock_resp.choices = [MagicMock()]
+            mock_resp.choices[0].message.content = '{"action": "filter_rows"}'
+            fallback_client.chat.completions.create.return_value = mock_resp
+
+            def client_factory(api_key):
+                if api_key == "key-primary":
+                    return primary_client
+                elif api_key == "key-fallback-1":
+                    return fallback_client
+                return MagicMock()
+
+            mock_groq_cls.side_effect = client_factory
+
+            res = call_groq_completion(messages=[{"role": "user", "content": "hi"}])
+            assert res == '{"action": "filter_rows"}'
+            # Primary and fallback-1 were tried, fallback-2 was NOT tried
+            keys_tried = [call[1]["api_key"] for call in mock_groq_cls.call_args_list]
+            assert keys_tried == ["key-primary", "key-fallback-1"]
+
+
+def test_fallback_case_3_two_keys_429_third_succeeds():
+    """CASE 3: First two keys return 429 -> third key succeeds."""
+    env = {
+        "DB_GROQ_API_KEY": "key-primary",
+        "DB_GROQ_API_KEY_1": "key-fallback-1",
+        "DB_GROQ_API_KEY_2": "key-fallback-2",
+        "DB_GROQ_MODEL": "llama-3.3-70b-versatile",
+    }
+    with patch.dict(os.environ, env, clear=True):
+        with patch("groq.Groq") as mock_groq_cls:
+            c1 = MagicMock()
+            c1.chat.completions.create.side_effect = Exception("429 Rate limit reached")
+            c2 = MagicMock()
+            c2.chat.completions.create.side_effect = Exception("429 Rate limit reached")
+            c3 = MagicMock()
+            mock_resp = MagicMock()
+            mock_resp.choices = [MagicMock()]
+            mock_resp.choices[0].message.content = '{"action": "third_key_success"}'
+            c3.chat.completions.create.return_value = mock_resp
+
+            def client_factory(api_key):
+                if api_key == "key-primary":
+                    return c1
+                elif api_key == "key-fallback-1":
+                    return c2
+                elif api_key == "key-fallback-2":
+                    return c3
+                return MagicMock()
+
+            mock_groq_cls.side_effect = client_factory
+
+            res = call_groq_completion(messages=[{"role": "user", "content": "hi"}])
+            assert res == '{"action": "third_key_success"}'
+            keys_tried = [call[1]["api_key"] for call in mock_groq_cls.call_args_list]
+            assert keys_tried == ["key-primary", "key-fallback-1", "key-fallback-2"]
+
+
+def test_fallback_case_4_all_keys_fail_raises():
+    """CASE 4: All configured keys fail -> raises RuntimeError with failure info, no fake success."""
+    env = {
+        "DB_GROQ_API_KEY": "key-primary",
+        "DB_GROQ_API_KEY_1": "key-fallback-1",
+        "DB_GROQ_MODEL": "llama-3.3-70b-versatile",
+    }
+    with patch.dict(os.environ, env, clear=True):
+        with patch("groq.Groq") as mock_groq_cls:
+            failing_client = MagicMock()
+            failing_client.chat.completions.create.side_effect = Exception("429 Rate limit exhausted")
+            mock_groq_cls.return_value = failing_client
+
+            with pytest.raises(RuntimeError) as exc_info:
+                call_groq_completion(messages=[{"role": "user", "content": "hi"}])
+            assert "All Groq fallback options exhausted" in str(exc_info.value)
+
+
+def test_fallback_case_5_auth_error_skips_key():
+    """CASE 5: A key has an authentication/invalid-key error -> skipped, next key used."""
+    env = {
+        "DB_GROQ_API_KEY": "invalid-key-bad-auth",
+        "DB_GROQ_API_KEY_1": "valid-fallback-key",
+        "DB_GROQ_MODEL": "llama-3.3-70b-versatile",
+    }
+    with patch.dict(os.environ, env, clear=True):
+        with patch("groq.Groq") as mock_groq_cls:
+            auth_fail_client = MagicMock()
+            auth_fail_client.chat.completions.create.side_effect = Exception("401 Invalid API Key (invalid_api_key)")
+
+            success_client = MagicMock()
+            mock_resp = MagicMock()
+            mock_resp.choices = [MagicMock()]
+            mock_resp.choices[0].message.content = '{"action": "valid_key_success"}'
+            success_client.chat.completions.create.return_value = mock_resp
+
+            def client_factory(api_key):
+                if api_key == "invalid-key-bad-auth":
+                    return auth_fail_client
+                return success_client
+
+            mock_groq_cls.side_effect = client_factory
+
+            res = call_groq_completion(messages=[{"role": "user", "content": "hi"}])
+            assert res == '{"action": "valid_key_success"}'
+
+
+def test_fallback_case_6_identical_keys_deduplicated():
+    """CASE 6: Same key value configured under multiple environment variables -> deduplicated, no wasted calls."""
+    env = {
+        "DB_GROQ_API_KEY": "duplicate-secret-xyz",
+        "DB_GROQ_API_KEY_1": "duplicate-secret-xyz",
+        "DB_GROQ_API_KEY_2": "duplicate-secret-xyz",
+        "DB_GROQ_MODEL": "llama-3.3-70b-versatile",
+    }
+    with patch.dict(os.environ, env, clear=True):
+        with patch("groq.Groq") as mock_groq_cls:
+            client = MagicMock()
+            mock_resp = MagicMock()
+            mock_resp.choices = [MagicMock()]
+            mock_resp.choices[0].message.content = '{"action": "deduped_success"}'
+            client.chat.completions.create.return_value = mock_resp
+            mock_groq_cls.return_value = client
+
+            res = call_groq_completion(messages=[{"role": "user", "content": "hi"}])
+            assert res == '{"action": "deduped_success"}'
+            # Since the secret was identical, it was deduplicated and initialized only ONCE per model
+            assert mock_groq_cls.call_count == 1
+

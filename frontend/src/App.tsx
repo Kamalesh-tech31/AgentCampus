@@ -288,9 +288,35 @@ export default function App() {
       if (res.success === false) {
         const isRateLimit = res.errorType === 'RATE_LIMITED' || res.summary?.toLowerCase().includes('rate limit');
         const failedAgents: Record<AgentType, AgentState> = JSON.parse(JSON.stringify(INITIAL_AGENTS));
+        
+        // Input and Mother planning status
         failedAgents.input.status = 'complete';
-        failedAgents.mother.status = 'failed';
-        failedAgents.mother.statusMessage = isRateLimit ? 'AI service rate limit reached.' : 'Workflow execution failed.';
+        failedAgents.input.statusMessage = 'Intent & entities parsed.';
+
+        if (res.rawPlan) {
+          failedAgents.mother.status = 'complete';
+          failedAgents.mother.statusMessage = 'Workflow plan synthesized.';
+        } else {
+          failedAgents.mother.status = 'failed';
+          failedAgents.mother.statusMessage = isRateLimit ? 'Mother Agent LLM quota/rate limit reached.' : 'Workflow planning failed.';
+        }
+
+        // Map individual agent execution states from backend execution record
+        const executedAgents = res.execution?.agents || [];
+        for (const exec of executedAgents) {
+          const agentKey = exec.agent as AgentType;
+          if (failedAgents[agentKey]) {
+            if (exec.status === 'completed') {
+              failedAgents[agentKey].status = 'complete';
+              failedAgents[agentKey].statusMessage = `${failedAgents[agentKey].name} completed successfully.`;
+            } else if (exec.status === 'failed') {
+              failedAgents[agentKey].status = 'failed';
+              failedAgents[agentKey].statusMessage = isRateLimit
+                ? `${failedAgents[agentKey].name} LLM quota/rate limit reached.`
+                : (res.summary || `${failedAgents[agentKey].name} failed.`);
+            }
+          }
+        }
 
         setThreads(prev =>
           prev.map(t => {
@@ -327,18 +353,39 @@ export default function App() {
       completedAgents.input.statusMessage = 'Intent & entities parsed successfully.';
       completedAgents.mother.status = 'complete';
       completedAgents.mother.statusMessage = 'Plan synthesized and executed.';
-      completedAgents.db.status = 'complete';
-      completedAgents.db.statusMessage = modeToUse === 'modify' ? 'Database modified.' : 'Query executed.';
+
+      const dbExec = res.execution?.agents?.find((a: any) => a.agent === 'db');
+      if (dbExec && dbExec.status === 'failed') {
+        completedAgents.db.status = 'failed';
+        completedAgents.db.statusMessage = res.summary || 'Database query failed.';
+      } else {
+        completedAgents.db.status = 'complete';
+        completedAgents.db.statusMessage = modeToUse === 'modify' ? 'Database modified successfully.' : 'Student data retrieved.';
+      }
 
       if (modeToUse === 'analyze') {
-        completedAgents.analytics.status = 'complete';
-        completedAgents.analytics.statusMessage = 'Deterministic metrics and insights calculated.';
+        const analyticsExec = res.execution?.agents?.find((a: any) => a.agent === 'analytics');
+        if (analyticsExec && analyticsExec.status === 'failed') {
+          completedAgents.analytics.status = 'failed';
+          completedAgents.analytics.statusMessage = res.summary || 'Analytics computation failed.';
+        } else {
+          completedAgents.analytics.status = 'complete';
+          completedAgents.analytics.statusMessage = 'Deterministic metrics and insights calculated.';
+        }
       } else {
         completedAgents.analytics.status = 'waiting';
       }
 
-      completedAgents.output.status = 'complete';
-      completedAgents.output.statusMessage = res.outputFile ? `Generated ${res.outputFormat?.toUpperCase()} artifact.` : 'Summary generated.';
+      const outputExec = res.execution?.agents?.find((a: any) => a.agent === 'output');
+      if (outputExec && outputExec.status === 'completed') {
+        completedAgents.output.status = 'complete';
+        completedAgents.output.statusMessage = res.outputFile ? `Generated ${res.outputFormat?.toUpperCase()} artifact.` : 'Summary generated.';
+      } else if (outputExec && outputExec.status === 'failed') {
+        completedAgents.output.status = 'failed';
+        completedAgents.output.statusMessage = res.summary || 'Output formatting failed.';
+      } else {
+        completedAgents.output.status = 'waiting';
+      }
 
       setThreads(prev =>
         prev.map(t => {
@@ -414,16 +461,59 @@ export default function App() {
 
       setConfirmationModal({ isOpen: false });
 
-      // Update turn
+      if (res.success === false || res.errorType) {
+        // Mutation execution failed on database
+        const isRateLimit = res.errorType === 'RATE_LIMITED' || res.summary?.toLowerCase().includes('rate limit');
+        const failureAgents: Record<AgentType, AgentState> = JSON.parse(JSON.stringify(INITIAL_AGENTS));
+        failureAgents.input.status = 'complete';
+        failureAgents.mother.status = 'complete';
+        failureAgents.db.status = 'failed';
+        failureAgents.db.statusMessage = res.summary || 'Database execution failed.';
+        failureAgents.output.status = 'waiting';
+
+        if (confirmationModal.turnId) {
+          const turnId = confirmationModal.turnId;
+          setThreads(prev =>
+            prev.map(t => {
+              if (t.id === selectedThreadId) {
+                const updatedTurns = t.turns.map(tn => {
+                  if (tn.id === turnId) {
+                    return {
+                      ...tn,
+                      status: 'failed' as any,
+                      result: res,
+                      plan: res.rawPlan,
+                      agents: failureAgents,
+                    };
+                  }
+                  return tn;
+                });
+                return { ...t, turns: updatedTurns };
+              }
+              return t;
+            })
+          );
+        }
+
+        showToast(
+          isRateLimit
+            ? 'AI service limit reached. Please try again after a few moments.'
+            : (res.summary || 'Database update failed.'),
+          'error'
+        );
+        return;
+      }
+
+      // Mutation executed successfully against the real database
       if (confirmationModal.turnId) {
         const turnId = confirmationModal.turnId;
         const completedAgents: Record<AgentType, AgentState> = JSON.parse(JSON.stringify(INITIAL_AGENTS));
         completedAgents.input.status = 'complete';
         completedAgents.mother.status = 'complete';
         completedAgents.db.status = 'complete';
-        completedAgents.db.statusMessage = 'Destructive mutation confirmed and executed.';
+        completedAgents.db.statusMessage = 'Destructive mutation confirmed and executed successfully.';
         completedAgents.output.status = 'complete';
-        completedAgents.output.statusMessage = 'Summary generated.';
+        completedAgents.output.statusMessage = res.summary || 'Summary generated.';
 
         setThreads(prev =>
           prev.map(t => {
@@ -447,6 +537,7 @@ export default function App() {
         );
       }
 
+      // Reload real database records
       await loadStudents();
       showToast('Database updated successfully. Preview refreshed.', 'success');
     } catch (err: any) {
@@ -568,6 +659,7 @@ export default function App() {
             currentMode={currentMode}
             onOpenJsonModal={(title, data) => setJsonModalData({ isOpen: true, title, data })}
             onSelectPreset={(p) => handleRunPipeline(p)}
+            usedPrompts={activeThread ? activeThread.turns.map(t => t.prompt) : []}
           />
 
           {/* Bottom Interactive Bar */}
@@ -577,6 +669,7 @@ export default function App() {
             onSelectFormat={setSelectedFormat}
             onSubmitPrompt={(p) => handleRunPipeline(p)}
             isExecuting={isExecuting}
+            usedPrompts={activeThread ? activeThread.turns.map(t => t.prompt) : []}
           />
         </div>
 

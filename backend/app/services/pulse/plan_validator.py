@@ -35,7 +35,7 @@ _NUMERIC_PARAM_LIMITS: dict[str, int] = {
 _VALID_STRATEGIES = {"tool_based", "hybrid", "llm_reasoning"}
 
 # Risk-service tools not in TOOL_REGISTRY but still allowed
-_ALLOWED_EXTRA_TOOLS = {"find_at_risk_records", "rank_risk_severity"}
+_ALLOWED_EXTRA_TOOLS = {"evaluate_risk", "find_at_risk_records", "rank_risk_severity"}
 
 
 def validate_plan(plan: dict, dataset_profile: dict) -> tuple[dict, list[str]]:
@@ -139,11 +139,20 @@ def _validate_operation(index: int, op: Any, available_columns: set[str]) -> tup
                 errors.append(f"{prefix} '{tool_name}': some metric names filtered out.")
             cleaned_params[param_key] = valid_metrics if valid_metrics else list(allowed_metrics)[:4]
 
+        # Validate weights parameter (dict or list of dicts)
+        elif param_key == "weights":
+            if isinstance(param_val, dict):
+                cleaned_params[param_key] = {str(k): float(v) for k, v in param_val.items() if isinstance(v, (int, float, str))}
+            elif isinstance(param_val, list):
+                cleaned_params[param_key] = [w for w in param_val if isinstance(w, dict)]
+            else:
+                cleaned_params[param_key] = param_val
+
         # Validate numeric limits
-        elif param_key in _NUMERIC_PARAM_LIMITS:
+        elif param_key in _NUMERIC_PARAM_LIMITS or param_key == "top_n":
             try:
                 n_val = int(param_val)
-                limit = _NUMERIC_PARAM_LIMITS[param_key]
+                limit = _NUMERIC_PARAM_LIMITS.get(param_key, 1000)
                 if n_val > limit:
                     errors.append(f"{prefix} '{tool_name}': {param_key}={n_val} exceeds limit {limit} — capped.")
                     n_val = limit
@@ -151,10 +160,12 @@ def _validate_operation(index: int, op: Any, available_columns: set[str]) -> tup
             except (TypeError, ValueError):
                 errors.append(f"{prefix} '{tool_name}': {param_key} is not numeric — skipped.")
 
-        # Allow safe scalar values (str, int, float, bool, list of scalars)
+        # Allow safe scalar values and dicts
         elif isinstance(param_val, (str, int, float, bool)):
             cleaned_params[param_key] = param_val
-        elif isinstance(param_val, list) and all(isinstance(v, (str, int, float, bool)) for v in param_val):
+        elif isinstance(param_val, dict):
+            cleaned_params[param_key] = param_val
+        elif isinstance(param_val, list) and all(isinstance(v, (str, int, float, bool, dict)) for v in param_val):
             cleaned_params[param_key] = param_val
         else:
             errors.append(f"{prefix} '{tool_name}': parameter '{param_key}' has unsafe type — skipped.")

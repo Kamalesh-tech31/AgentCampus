@@ -354,6 +354,13 @@ class MotherAgent:
                 req_confirm = bool(db_res.get("requires_confirmation")) if isinstance(db_res, dict) else False
                 confirm_details = db_res if req_confirm else None
 
+                affected_count = (
+                    (db_res.get("rows_updated") if isinstance(db_res, dict) else None)
+                    or result_dict.get("affectedCount")
+                    or result_dict.get("affected_count")
+                    or (db_res.get("count") if isinstance(db_res, dict) else None)
+                )
+
                 exec_summary = {
                     "agents": [
                         {"agent": t.agent, "status": t.status}
@@ -364,6 +371,8 @@ class MotherAgent:
                 final_res = OrchestrationResult(
                     summary=summary_text,
                     query_executed=query_executed,
+                    mutation_executed=query_executed if workflow.mode == "modify" else None,
+                    affected_count=affected_count,
                     raw_plan=workflow.plan,
                     output_format=output_format or "text",
                     output_file=output_file,
@@ -373,6 +382,7 @@ class MotherAgent:
                     requires_confirmation=req_confirm,
                     confirmation_details=confirm_details,
                     execution=exec_summary,
+                    success=True,
                 )
                 workflow.final_result = final_res
 
@@ -407,6 +417,7 @@ class MotherAgent:
                 input_data={
                     "user_query": workflow.user_query,
                     "mode": workflow.mode,
+                    "request_type": workflow.request_type,
                     "confirmed": workflow.confirmed,
                     **workflow.results,
                 },
@@ -434,6 +445,30 @@ class MotherAgent:
                 self.task_manager.update_task_status(task, "failed")
                 workflow.task_history.append(task)
                 workflow.status = "failed"
+                if workflow.plan:
+                    updated_steps = []
+                    for step in workflow.plan.steps:
+                        if step.agent == next_agent:
+                            updated_steps.append(
+                                PlanStep(
+                                    id=step.id,
+                                    step_number=step.step_number,
+                                    agent=step.agent,
+                                    action=step.action,
+                                    description=step.description,
+                                    status="failed",
+                                    live_message=f"Agent {next_agent} failed: {str(exc)}",
+                                )
+                            )
+                        else:
+                            updated_steps.append(step)
+                    workflow.plan = DynamicPlan(
+                        task_id=workflow.plan.task_id,
+                        title=workflow.plan.title,
+                        intent=workflow.plan.intent,
+                        request_type=workflow.plan.request_type,
+                        steps=updated_steps,
+                    )
                 workflow.events.append(
                     OrchestrationEvent(
                         type="AGENT_FAILED",
@@ -490,6 +525,33 @@ class MotherAgent:
                 self.task_manager.update_task_status(task, "failed")
                 workflow.task_history.append(task)
                 workflow.status = "failed"
+
+                # Update step status in plan to failed
+                if workflow.plan:
+                    updated_steps = []
+                    for step in workflow.plan.steps:
+                        if step.agent == next_agent:
+                            updated_steps.append(
+                                PlanStep(
+                                    id=step.id,
+                                    step_number=step.step_number,
+                                    agent=step.agent,
+                                    action=step.action,
+                                    description=step.description,
+                                    status="failed",
+                                    live_message=agent_result.error or f"{next_agent} agent failed",
+                                )
+                            )
+                        else:
+                            updated_steps.append(step)
+                    workflow.plan = DynamicPlan(
+                        task_id=workflow.plan.task_id,
+                        title=workflow.plan.title,
+                        intent=workflow.plan.intent,
+                        request_type=workflow.plan.request_type,
+                        steps=updated_steps,
+                    )
+
                 workflow.events.append(
                     OrchestrationEvent(
                         type="AGENT_FAILED",
@@ -503,11 +565,27 @@ class MotherAgent:
 
         if workflow.final_result is None:
             failed_task = next((t for t in workflow.task_history if t.status == "failed"), None)
-            err_msg = (
-                f"Agent {failed_task.agent} failed during workflow execution."
-                if failed_task
-                else "Workflow execution failed."
-            )
+            if failed_task:
+                failed_event = next((e for e in reversed(workflow.events) if e.type == "AGENT_FAILED" and getattr(e, "agent_id", "") == failed_task.agent), None)
+                detail = getattr(failed_event, "message", None)
+                if detail and detail.startswith(f"Agent {failed_task.agent} failed: "):
+                    detail = detail.replace(f"Agent {failed_task.agent} failed: ", "")
+                elif detail and detail.startswith(f"Agent {failed_task.agent} reported failure"):
+                    detail = None
+                
+                if failed_task.agent == "db":
+                    err_msg = f"DB Agent failed while retrieving student data: {detail}" if detail else "DB Agent failed while retrieving student data."
+                elif failed_task.agent == "input":
+                    err_msg = f"Input Agent failed during request parsing: {detail}" if detail else "Input Agent failed during request parsing."
+                elif failed_task.agent == "analytics":
+                    err_msg = f"Pulse Analytics failed while analyzing student data: {detail}" if detail else "Pulse Analytics failed while analyzing student data."
+                elif failed_task.agent == "output":
+                    err_msg = f"Scribe Output failed during report generation: {detail}" if detail else "Scribe Output failed during report generation."
+                else:
+                    err_msg = f"Agent {failed_task.agent} failed during workflow execution: {detail}" if detail else f"Agent {failed_task.agent} failed during workflow execution."
+            else:
+                err_msg = "Mother Agent failed during workflow planning."
+
             is_rate_limit = any(
                 "rate limit" in str(getattr(e, "message", "")).lower() or "429" in str(getattr(e, "message", ""))
                 for e in workflow.events

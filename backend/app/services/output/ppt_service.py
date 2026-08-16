@@ -421,6 +421,205 @@ def _generate_fallback_ppt(
     pulse_data: Optional[dict] = None
 ) -> int:
     """Deterministic fallback ppt generation."""
+    # ── 1. Specialized Presentation for Weighted Ranking ──────────────────────
+    if pulse_data and (pulse_data.get("analysis_type") == "weighted_ranking" or "ranking" in pulse_data):
+        total_recs = pulse_data.get("records_analyzed", len(records))
+        top_recs = pulse_data.get("ranking") or (pulse_data.get("tables", {}).get("top_performers", []))
+        formula = pulse_data.get("formula", "Weighted Score = ((CGPA / 10) × 100 × 0.80) + (Attendance × 0.20)")
+        stats = pulse_data.get("statistics", {})
+
+        # Slide 1: Title Slide
+        _add_title_slide(
+            prs,
+            user_query,
+            title="Student Ranking & Performance Analysis",
+            subtitle=f"Multi-Criteria Evaluation ({total_recs} Students)"
+        )
+        slide_count = 1
+
+        # Slide 2: Methodology & Formula
+        method_points = [
+            "Scoring Weights: 80% Academic Performance, 20% Attendance.",
+            "Scale Normalization: CGPA is scaled to 100 points via (CGPA / 10) * 100.",
+            f"Mathematical Formula: {formula}",
+            f"Tie Resolution: {pulse_data.get('tie_breaking_rule', 'Positions resolved by higher CGPA, followed by attendance.')}",
+        ]
+        _add_generic_text_slide(prs, "Methodology & Scoring Model", method_points, color=_DARK_BLUE)
+        slide_count += 1
+
+        # Slide 3: Executive Summary & Stats
+        max_sc = stats.get("highest_weighted_score", top_recs[0].get("_weighted_score", 0.0) if top_recs else 0.0)
+        avg_sc = stats.get("average_weighted_score", 0.0)
+        summary_points = [
+            f"Evaluated complete cohort of {total_recs} student records.",
+            f"Highest Composite Score: {max_sc:.2f} (Rank 1).",
+            f"Cohort Average Weighted Score: {avg_sc:.2f}.",
+            f"Identified top {len(top_recs)} confirmed performers.",
+        ]
+        if pulse_data.get("ties"):
+            summary_points.append(f"Detected {len(pulse_data['ties'])} score tie(s); resolved deterministically.")
+        _add_generic_text_slide(prs, "Cohort Overview & Key Statistics", summary_points, color=_MID_BLUE)
+        slide_count += 1
+
+        # Slide 4: Top Performers Table
+        if top_recs:
+            slide_count += _add_multi_data_table_slides(prs, top_recs[:15], title=f"Top {len(top_recs)} Performers")
+
+        # Slide 5: Performance Chart
+        from app.services.output.chart_service import ranking_bar_chart, render_dynamic_chart
+        chart_bytes = None
+        if pulse_data.get("chart_data") and "ranking_bar" in pulse_data["chart_data"]:
+            try:
+                chart_bytes = render_dynamic_chart(pulse_data["chart_data"]["ranking_bar"])
+            except Exception as exc:
+                logger.warning(f"[PPTService] Dynamic chart failed: {exc}")
+        if not chart_bytes and top_recs:
+            try:
+                chart_bytes = ranking_bar_chart(top_recs)
+            except Exception as exc:
+                logger.warning(f"[PPTService] Fallback ranking chart failed: {exc}")
+
+        if chart_bytes:
+            _add_chart_slide(prs, chart_bytes, "Top Performers Score Distribution")
+            slide_count += 1
+
+        # Slide 6: Key Insights & Recommendations
+        insights_points = []
+        if insight:
+            insights_points.append(insight)
+        elif pulse_data.get("insights"):
+            insights_points.extend(pulse_data["insights"])
+        else:
+            insights_points.append(f"Rank 1 performer demonstrated top academic balance with high CGPA and attendance.")
+
+        if insights_points:
+            _add_generic_text_slide(prs, "Key Findings & Analysis", insights_points, color=_BLACK)
+            slide_count += 1
+
+        return slide_count
+
+    # ── 2. Specialized Presentation for Academic Risk Assessment ──────────────
+    if pulse_data and (pulse_data.get("analysis_type") == "risk_analysis" or "at_risk" in pulse_data or "at_risk_students" in pulse_data.get("tables", {})):
+        at_risk_recs = pulse_data.get("at_risk") or pulse_data.get("tables", {}).get("at_risk_students", [])
+        total_recs = pulse_data.get("total_records", pulse_data.get("records_analyzed", len(records)))
+        at_risk_count = pulse_data.get("at_risk_count", len(at_risk_recs))
+        safe_count = pulse_data.get("safe_count", total_recs - at_risk_count)
+        at_risk_pct = pulse_data.get("at_risk_percentage", round((at_risk_count / max(1, total_recs)) * 100.0, 1))
+        sev_dist = pulse_data.get("severity_distribution", {})
+        crit_count = sev_dist.get("Critical", 0)
+        high_count = sev_dist.get("High", 0)
+
+        # Slide 1: Title Slide
+        _add_title_slide(
+            prs,
+            user_query,
+            title="Academic Risk Assessment & Early Intervention",
+            subtitle=f"Institutional Cohort Evaluation ({total_recs} Students)"
+        )
+        slide_count = 1
+
+        # Slide 2: Executive Summary & Cohort Overview
+        summary_points = [
+            f"Evaluated {total_recs} enrolled student records across academic & attendance criteria.",
+            f"Identified {at_risk_count} at-risk students ({at_risk_pct}% of cohort) | {safe_count} Safe.",
+            f"Immediate Priority: {crit_count} Critical severity, {high_count} High severity cases.",
+        ]
+        dom_pat = pulse_data.get("dominant_risk_pattern")
+        if dom_pat:
+            summary_points.append(f"Dominant Pattern: {dom_pat}")
+        _add_generic_text_slide(prs, "Executive Summary & Risk Overview", summary_points, color=_RED)
+        slide_count += 1
+
+        # Slide 3: Risk Methodology & Thresholds
+        method_points = [
+            "Academic Threshold: CGPA < 6.50 (Max 40 risk points).",
+            "Attendance Threshold: Attendance < 75.0% (Max 30 risk points).",
+            "Probation Status: Active probation (20 baseline points + priority escalation).",
+            "Course Backlogs: Active backlogs (5 points per course backlog).",
+            "Severity Tiers: Critical (Score ≥ 60), High (≥ 40), Moderate (≥ 20), Low (> 0), Safe (0).",
+        ]
+        _add_generic_text_slide(prs, "Risk Assessment Methodology", method_points, color=_DARK_BLUE)
+        slide_count += 1
+
+        # Slide 4: Risk Charts (Factors & Severity)
+        from app.services.output.chart_service import render_dynamic_chart
+        c_data = pulse_data.get("chart_data", {})
+        for chart_key in ("risk_factors_bar", "risk_severity_pie"):
+            if chart_key in c_data:
+                try:
+                    c_bytes = render_dynamic_chart(c_data[chart_key])
+                    if c_bytes:
+                        _add_chart_slide(prs, c_bytes, c_data[chart_key].get("title", "Risk Chart"))
+                        slide_count += 1
+                except Exception as exc:
+                    logger.warning(f"[PPTService] Risk chart {chart_key} failed: {exc}")
+
+        # Slide 5: High & Critical Priority Students Table
+        if at_risk_recs:
+            slide_count += _add_multi_data_table_slides(prs, at_risk_recs[:15], title=f"High Priority At-Risk Students (Top 15 of {at_risk_count})")
+
+        # Slide 6: Actionable Recommendations
+        recs = pulse_data.get("data_driven_recommendations", [])
+        if recs:
+            _add_generic_text_slide(prs, "Institutional Recommendations & Interventions", [f"• {r}" for r in recs], color=_BLACK)
+            slide_count += 1
+
+        return slide_count
+
+    # ── 3. Specialized Presentation for Correlation & Regression ──────────────
+    if pulse_data and (pulse_data.get("analysis_type") == "correlation_analysis" or "correlation" in pulse_data):
+        f1 = pulse_data.get("field1_label") or pulse_data.get("field1") or "Attendance"
+        f2 = pulse_data.get("field2_label") or pulse_data.get("field2") or "CGPA"
+        r_val = pulse_data.get("correlation", 0.0)
+        r_sq = pulse_data.get("r_squared", round(r_val ** 2, 4))
+        strength = pulse_data.get("strength", "moderate")
+        direction = pulse_data.get("direction", "positive")
+        reg = pulse_data.get("regression", {})
+        n_obs = pulse_data.get("records_analyzed", len(records))
+
+        # Slide 1: Title
+        _add_title_slide(
+            prs,
+            user_query,
+            title=f"Bivariate Correlation: {f1} vs {f2}",
+            subtitle=f"Empirical Statistical Evaluation ({n_obs} Observations)"
+        )
+        slide_count = 1
+
+        # Slide 2: Key Correlation Metrics
+        corr_points = [
+            f"Evaluated {n_obs} paired student observations.",
+            f"Pearson Correlation (r): {r_val:.4f} ({strength.upper()} {direction.upper()} association).",
+            f"Coefficient of Determination (R²): {r_sq:.4f} ({r_sq * 100:.1f}% explained variance).",
+        ]
+        if reg.get("formula"):
+            corr_points.append(f"Linear Fit: {reg['formula']} (Slope = {reg.get('slope')}, Intercept = {reg.get('intercept')})")
+        _add_generic_text_slide(prs, "Correlation & Regression Metrics", corr_points, color=_DARK_BLUE)
+        slide_count += 1
+
+        # Slide 3: Scatter Plot Slide
+        if pulse_data.get("chart_data") and "scatter_plot" in pulse_data["chart_data"]:
+            from app.services.output.chart_service import render_dynamic_chart
+            try:
+                c_bytes = render_dynamic_chart(pulse_data["chart_data"]["scatter_plot"])
+                if c_bytes:
+                    _add_chart_slide(prs, c_bytes, f"Scatter Plot: {f2} vs {f1}")
+                    slide_count += 1
+            except Exception as exc:
+                logger.warning(f"[PPTService] Scatter plot slide failed: {exc}")
+
+        # Slide 4: Interpretation & Limitations
+        interp = pulse_data.get("interpretation")
+        interp_points = [
+            interp if interp else f"A {strength} {direction} statistical relationship was observed between {f1} and {f2}.",
+            "Important Notice: Correlation indicates statistical association and does not prove direct causation.",
+        ]
+        _add_generic_text_slide(prs, "Analytical Interpretation & Insights", interp_points, color=_BLACK)
+        slide_count += 1
+
+        return slide_count
+
+    # ── 4. Standard Fallback for Other Queries ────────────────────────────────
     _add_title_slide(prs, user_query)
     slide_count = 1
 
@@ -448,11 +647,11 @@ def _generate_fallback_ppt(
                 except Exception as exc:
                     logger.warning(f"[PPTService] Fallback chart failed: {exc}")
 
-        # Render tables as slides
+        # Render tables as slides (capped to top 20 records)
         if pulse_data.get("tables"):
             for tname, trows in pulse_data["tables"].items():
                 if trows:
-                    slide_count += _add_multi_data_table_slides(prs, trows, humanize(tname))
+                    slide_count += _add_multi_data_table_slides(prs, trows[:20], humanize(tname))
         return slide_count
 
     # Legacy fallback behavior when pulse_data is not present

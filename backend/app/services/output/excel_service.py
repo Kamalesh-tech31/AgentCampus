@@ -225,33 +225,95 @@ def generate_excel(
     wb = openpyxl.Workbook()
     sheet_count = 0
 
-    # ── Sheet 1: Student Data ─────────────────────────────────────────────────
-    ws_data = wb.active
-    ws_data.title = "Student Data"
-    _write_records_sheet(ws_data, records)
-    sheet_count += 1
+    # ── Specialized Pulse Data Multi-Sheet Workbook ───────────────────────────
+    if pulse_data:
+        # 1. Custom primary tables from Pulse
+        if pulse_data.get("at_risk") or pulse_data.get("tables", {}).get("at_risk_students"):
+            at_risk_recs = pulse_data.get("at_risk") or pulse_data.get("tables", {}).get("at_risk_students", [])
+            ws_risk = wb.active
+            ws_risk.title = "At-Risk Students"
+            _write_records_sheet(ws_risk, at_risk_recs)
+            sheet_count += 1
 
-    # ── Sheet 2: Analysis (optional) ─────────────────────────────────────────
-    if metrics:
-        ws_analysis = wb.create_sheet(title="Analysis")
-        _write_analysis_sheet(ws_analysis, metrics, insight)
+            # Department breakdown sheet if present
+            dept_recs = pulse_data.get("department_analysis") or pulse_data.get("tables", {}).get("department_risk", [])
+            if dept_recs:
+                ws_dept = wb.create_sheet(title="Department Risk")
+                _write_records_sheet(ws_dept, dept_recs)
+                sheet_count += 1
+
+        elif pulse_data.get("ranking") or pulse_data.get("tables", {}).get("top_performers"):
+            top_recs = pulse_data.get("ranking") or pulse_data.get("tables", {}).get("top_performers", [])
+            ws_rank = wb.active
+            ws_rank.title = "Top Performers"
+            _write_records_sheet(ws_rank, top_recs)
+            sheet_count += 1
+
+        elif pulse_data.get("tables"):
+            active_set = False
+            for tname, trows in pulse_data["tables"].items():
+                if trows:
+                    sheet_title = humanize(tname)[:31]
+                    if not active_set:
+                        ws_tbl = wb.active
+                        ws_tbl.title = sheet_title
+                        active_set = True
+                    else:
+                        ws_tbl = wb.create_sheet(title=sheet_title)
+                    _write_records_sheet(ws_tbl, trows)
+                    sheet_count += 1
+        else:
+            ws_data = wb.active
+            ws_data.title = "Student Data"
+            _write_records_sheet(ws_data, records)
+            sheet_count += 1
+
+        # Embed dynamic charts from Pulse
+        if pulse_data.get("chart_data"):
+            from app.services.output.chart_service import render_dynamic_chart
+            from openpyxl.drawing.image import Image as XLImage
+            ws_chart = wb.create_sheet(title="Visualizations")
+            row_anchor = 1
+            for cname, cdata in pulse_data["chart_data"].items():
+                try:
+                    cbytes = render_dynamic_chart(cdata)
+                    if cbytes:
+                        img = XLImage(io.BytesIO(cbytes))
+                        img.anchor = f"A{row_anchor}"
+                        ws_chart.add_image(img)
+                        row_anchor += 25
+                        sheet_count += 1
+                except Exception as exc:
+                    logger.warning(f"[ExcelService] Could not embed dynamic chart {cname}: {exc}")
+
+    else:
+        # ── Legacy Sheet 1: Student Data ──────────────────────────────────────
+        ws_data = wb.active
+        ws_data.title = "Student Data"
+        _write_records_sheet(ws_data, records)
         sheet_count += 1
 
-    # ── Optional: Chart sheet via chart_service ───────────────────────────────
-    if records:
-        try:
-            from app.services.output.chart_service import cgpa_distribution_chart
-            from openpyxl.drawing.image import Image as XLImage
+        # ── Legacy Sheet 2: Analysis (optional) ───────────────────────────────
+        if metrics:
+            ws_analysis = wb.create_sheet(title="Analysis")
+            _write_analysis_sheet(ws_analysis, metrics, insight)
+            sheet_count += 1
 
-            chart_bytes = cgpa_distribution_chart(records)
-            if chart_bytes:
-                ws_chart = wb.create_sheet(title="CGPA Chart")
-                img = XLImage(io.BytesIO(chart_bytes))
-                img.anchor = "A1"
-                ws_chart.add_image(img)
-                sheet_count += 1
-        except Exception as exc:
-            logger.warning(f"[ExcelService] Could not embed chart: {exc}")
+        # ── Legacy Chart Sheet ────────────────────────────────────────────────
+        if records:
+            try:
+                from app.services.output.chart_service import cgpa_distribution_chart
+                from openpyxl.drawing.image import Image as XLImage
+
+                chart_bytes = cgpa_distribution_chart(records)
+                if chart_bytes:
+                    ws_chart = wb.create_sheet(title="CGPA Chart")
+                    img = XLImage(io.BytesIO(chart_bytes))
+                    img.anchor = "A1"
+                    ws_chart.add_image(img)
+                    sheet_count += 1
+            except Exception as exc:
+                logger.warning(f"[ExcelService] Could not embed chart: {exc}")
 
     # ── Save ──────────────────────────────────────────────────────────────────
     out_dir = _ensure_output_dir()

@@ -133,11 +133,14 @@ def _build_orchestration_result(
     summary: str,
     output_format: str,
     output_file: Optional[str],
+    affected_count: Optional[int] = None,
 ) -> OrchestrationResult:
     """
     Build and validate the OrchestrationResult contract model.
     Preserves all existing fields for backward compatibility.
     """
+    from app.contracts.students import StudentRecord
+
     validated_metrics: Optional[OrchestrationMetrics] = None
     if metrics_dict:
         try:
@@ -145,15 +148,26 @@ def _build_orchestration_result(
         except Exception as exc:
             logger.warning(f"[Scribe] Could not validate metrics: {exc}")
 
+    parsed_records = []
+    if isinstance(records, list) and records:
+        for r in records:
+            if isinstance(r, dict):
+                try:
+                    parsed_records.append(StudentRecord.model_validate(r))
+                except Exception:
+                    pass
+
     return OrchestrationResult(
         summary=summary,
         query_executed=sql,
-        affected_count=len(records) if records else None,
-        data=None,           # Not serialising full StudentRecord list — too large for result dict
+        mutation_executed=sql if sql and any(kw in sql.upper() for kw in ("UPDATE", "INSERT", "DELETE", "ALTER", "CREATE")) else None,
+        affected_count=affected_count if affected_count is not None else (len(records) if records else None),
+        data=parsed_records if parsed_records else None,
         metrics=validated_metrics,
-        csv_data=None,       # CSV generation removed; Excel replaces this use case
+        csv_data=None,
         output_format=output_format,
         output_file=output_file,
+        success=True,
     )
 
 
@@ -278,8 +292,21 @@ class OutputAgent(BaseAgent):
             output_format = "text"
             text_content = self._generate_text(records, metrics_dict, insight, user_query)
 
-        # ── Build summary ─────────────────────────────────────────────────────
-        summary = _build_summary(records, metrics_dict, output_format, file_info)
+        # ── Build summary & affected_count ────────────────────────────────────
+        db_res = input_data.get("db", {})
+        affected_count = (
+            db_res.get("rows_updated")
+            if isinstance(db_res, dict) and db_res.get("rows_updated") is not None
+            else (db_res.get("count") if isinstance(db_res, dict) else len(records))
+        )
+        if isinstance(db_res, dict) and db_res.get("message") and any(w in db_res.get("message", "").lower() for w in ("updated", "deleted", "inserted", "bulk update")):
+            summary = db_res["message"]
+        elif text_content:
+            summary = text_content
+            if output_format != "text" and file_info:
+                summary += f"\n\n[Report generated as {output_format.upper()}: {file_info.get('file_name', '')}]"
+        else:
+            summary = _build_summary(records, metrics_dict, output_format, file_info)
 
         # ── Build OrchestrationResult (backward-compatible contract) ──────────
         result_contract = _build_orchestration_result(
@@ -289,6 +316,7 @@ class OutputAgent(BaseAgent):
             summary=summary,
             output_format=output_format,
             output_file=output_file,
+            affected_count=affected_count,
         )
 
         # ── Assemble AgentResult ──────────────────────────────────────────────

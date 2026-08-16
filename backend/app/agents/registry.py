@@ -27,6 +27,8 @@ class AgentRegistry:
 
         return agent
 
-    def list_agents(self) -> list[str]:
+    def register(self, name: str, agent: BaseAgent) -> None:
+        self._agents[name] = agent
 
+    def list_agents(self) -> list[str]:
         return list(self._agents.keys())

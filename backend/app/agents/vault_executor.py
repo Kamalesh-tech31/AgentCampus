@@ -338,7 +338,7 @@ def execute_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
             field = params.get("field")
             operation = params.get("operation")
             value = params.get("value")
-            max_rows = params.get("max_rows", 50)
+            max_rows = params.get("max_rows", 1000)
 
             if not field or field not in known_fields:
                 return {

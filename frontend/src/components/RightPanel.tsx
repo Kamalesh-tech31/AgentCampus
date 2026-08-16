@@ -183,9 +183,9 @@ export const RightPanel: React.FC<RightPanelProps> = ({
             </div>
 
             {/* Summary Text */}
-            <p className="text-xs text-slate-700 dark:text-slate-300 leading-relaxed font-normal">
+            <div className="text-xs text-slate-700 dark:text-slate-300 leading-relaxed font-mono whitespace-pre-wrap max-h-60 overflow-y-auto custom-scrollbar p-2.5 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200/60 dark:border-slate-700">
               {result.summary}
-            </p>
+            </div>
 
             {/* 1. EXPLORE MODE SPECIFIC RESULT */}
             {mode === 'explore' && (
@@ -218,7 +218,7 @@ export const RightPanel: React.FC<RightPanelProps> = ({
             )}
 
             {/* 2. MODIFY MODE SPECIFIC RESULT */}
-            {mode === 'modify' && (
+            {mode === 'modify' && result.success !== false && (
               <div className="space-y-3 pt-1">
                 <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 space-y-1.5">
                   <div className="flex items-center gap-1.5 text-emerald-800 dark:text-emerald-300 font-bold text-xs">
@@ -237,6 +237,20 @@ export const RightPanel: React.FC<RightPanelProps> = ({
                   <Database className="w-3.5 h-3.5" />
                   <span>Inspect Live Database Preview</span>
                 </button>
+              </div>
+            )}
+
+            {mode === 'modify' && result.success === false && (
+              <div className="space-y-3 pt-1">
+                <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 space-y-1.5">
+                  <div className="flex items-center gap-1.5 text-rose-800 dark:text-rose-300 font-bold text-xs">
+                    <AlertCircle className="w-4 h-4 text-rose-600 dark:text-rose-400" />
+                    <span>Database Mutation Failed</span>
+                  </div>
+                  <p className="text-[11px] text-rose-700 dark:text-rose-400">
+                    {result.summary || 'Database agent failed during mutation execution.'}
+                  </p>
+                </div>
               </div>
             )}
 

@@ -16,6 +16,9 @@ def _format_sql_from_plan(plan: Dict[str, Any]) -> str:
     params = plan.get("params", {})
 
     if action in ("filter_rows", "get_all_rows"):
+        fields = params.get("fields")
+        fields_str = ", ".join(fields) if (isinstance(fields, list) and fields) else "*"
+
         filters = params.get("filters", [])
         if not filters and "field" in params:
             filters = [{"field": params["field"], "op": params.get("op", "eq"), "value": params.get("value")}]
@@ -24,28 +27,110 @@ def _format_sql_from_plan(plan: Dict[str, Any]) -> str:
         for f in filters:
             field = f.get("field")
             op = f.get("op", "eq")
-            op_str = "=" if op == "eq" else (">=" if op == "gte" else ("<=" if op == "lte" else op))
+            op_str = "=" if op == "eq" else (">=" if op == "gte" else ("<=" if op == "lte" else (">" if op == "gt" else ("<" if op == "lt" else ("!=" if op in ("neq", "<>") else op)))))
             val = f.get("value")
             val_str = f"'{val}'" if isinstance(val, str) else str(val)
             if field and val is not None:
                 where_clauses.append(f"{field} {op_str} {val_str}")
 
         where_str = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+        sort_field = params.get("sort_field") or params.get("sort")
+        sort_str = ""
+        if sort_field and isinstance(sort_field, str):
+            order_dir = "DESC" if str(params.get("order", "desc")).lower() in ("desc", "descending") else "ASC"
+            sort_str = f" ORDER BY {sort_field} {order_dir}"
+
         limit = params.get("limit")
-        limit_str = f" LIMIT {limit}" if limit else ""
-        return f"SELECT * FROM {table}{where_str}{limit_str};"
+        limit_str = f" LIMIT {limit}" if limit is not None and str(limit).strip().lower() not in ("none", "null", "") else ""
+        return f"SELECT {fields_str} FROM {table}{where_str}{sort_str}{limit_str};"
 
     elif action == "insert_row":
         data = params.get("data", {})
-        return f"INSERT INTO {table} ({', '.join(data.keys())}) VALUES ({', '.join([repr(v) for v in data.values()])});"
+        if data:
+            cols = list(data.keys())
+            val_strs = [f"'{v}'" if isinstance(v, str) else str(v) for v in data.values()]
+            return f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({', '.join(val_strs)});"
+        return f"INSERT INTO {table} DEFAULT VALUES;"
+
     elif action == "update_row":
         row_id = params.get("row_id")
         data = params.get("data", {})
-        set_str = ", ".join([f"{k} = {repr(v)}" for k, v in data.items()])
-        return f"UPDATE {table} SET {set_str} WHERE id = '{row_id}';"
+        set_clauses = []
+        for k, v in data.items():
+            val_str = f"'{v}'" if isinstance(v, str) else str(v)
+            set_clauses.append(f"{k} = {val_str}")
+        set_str = ", ".join(set_clauses) if set_clauses else "/* no updates */"
+        where_str = f" WHERE id = '{row_id}'" if row_id else ""
+        return f"UPDATE {table} SET {set_str}{where_str};"
+
+    elif action == "bulk_update":
+        field = params.get("field")
+        op = params.get("operation", "set")
+        val = params.get("value")
+        val_str = f"'{val}'" if isinstance(val, str) else str(val)
+        if op == "add":
+            set_expr = f"{field} = {field} + {val}"
+        elif op == "subtract":
+            set_expr = f"{field} = {field} - {val}"
+        elif op == "multiply":
+            set_expr = f"{field} = {field} * {val}"
+        else:
+            set_expr = f"{field} = {val_str}"
+
+        filters = params.get("filters", [])
+        where_clauses = []
+        for f in filters:
+            f_field = f.get("field")
+            f_op = f.get("op", "eq")
+            op_str = "=" if f_op == "eq" else (">=" if f_op == "gte" else ("<=" if f_op == "lte" else (">" if f_op == "gt" else ("<" if f_op == "lt" else f_op))))
+            f_val = f.get("value")
+            f_val_str = f"'{f_val}'" if isinstance(f_val, str) else str(f_val)
+            if f_field and f_val is not None:
+                where_clauses.append(f"{f_field} {op_str} {f_val_str}")
+        where_str = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        return f"UPDATE {table} SET {set_expr}{where_str};"
+
     elif action == "delete_row":
         row_id = params.get("row_id")
-        return f"DELETE FROM {table} WHERE id = '{row_id}';"
+        filters = params.get("filters", [])
+        if row_id:
+            return f"DELETE FROM {table} WHERE id = '{row_id}';"
+        where_clauses = []
+        for f in filters:
+            f_field = f.get("field")
+            f_op = f.get("op", "eq")
+            op_str = "=" if f_op == "eq" else (">=" if f_op == "gte" else ("<=" if f_op == "lte" else (">" if f_op == "gt" else ("<" if f_op == "lt" else f_op))))
+            f_val = f.get("value")
+            f_val_str = f"'{f_val}'" if isinstance(f_val, str) else str(f_val)
+            if f_field and f_val is not None:
+                where_clauses.append(f"{f_field} {op_str} {f_val_str}")
+        where_str = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        return f"DELETE FROM {table}{where_str};"
+
+    elif action == "create_table":
+        cols = params.get("columns", {})
+        col_defs = [f"{col} {str(ctype).upper()}" for col, ctype in cols.items()]
+        return f"CREATE TABLE {table} ({', '.join(col_defs)});"
+
+    elif action == "add_column":
+        col_name = params.get("column_name")
+        col_type = str(params.get("column_type", "TEXT")).upper()
+        return f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type};"
+
+    elif action == "drop_column":
+        col_name = params.get("column_name")
+        return f"ALTER TABLE {table} DROP COLUMN {col_name};"
+
+    elif action == "count_rows":
+        return f"SELECT COUNT(*) FROM {table};"
+
+    elif action == "join_query":
+        p_tbl = params.get("primary_table", table)
+        j_tbl = params.get("join_table", "courses")
+        j_on = params.get("join_on", {})
+        on_str = f"{p_tbl}.{j_on.get('primary_field', 'id')} = {j_tbl}.{j_on.get('join_field', 'id')}" if j_on else f"{p_tbl}.id = {j_tbl}.id"
+        return f"SELECT * FROM {p_tbl} JOIN {j_tbl} ON {on_str};"
 
     return f"-- Action: {action} on table: {table}"
 
@@ -91,7 +176,7 @@ class DBAgent(BaseAgent):
         is_destructive = (
             action == "drop_column"
             or (action == "delete_row" and (not params.get("row_id") or "filters" in params))
-            or (action == "bulk_update" and params.get("filters"))
+            or (action == "bulk_update" and (params.get("filters") or not params.get("filters")))
         )
 
         if is_destructive and not confirmed:
@@ -125,8 +210,6 @@ class DBAgent(BaseAgent):
         exec_res = execute_plan(plan)
 
         if exec_res.get("success"):
-            data = exec_res.get("data")
-            records = data if isinstance(data, list) else ([data] if data else [])
             sql_repr = _format_sql_from_plan(plan)
 
             # Invalidate schema cache so preview is never stale
@@ -137,21 +220,61 @@ class DBAgent(BaseAgent):
             if action in ("update_row", "insert_row", "delete_row", "bulk_update") and table == "students":
                 self._sync_in_memory_mutation(action, plan, params)
 
+            # Query the database again to fetch the updated records so preview reflects actual state
+            from app.db.generic_queries import generic_get_all
+            fresh_records, _, total_count = generic_get_all(table, limit=100)
+
+            # Extract actual rows_updated from exec_res if available
+            res_data = exec_res.get("data", {})
+            rows_updated = None
+            if isinstance(res_data, dict):
+                rows_updated = res_data.get("rows_updated")
+            elif action in ("update_row", "insert_row"):
+                rows_updated = 1
+            elif action == "delete_row":
+                rows_updated = exec_res.get("rows_deleted", 1)
+
+            if rows_updated is None and action == "bulk_update":
+                rows_updated = total_count
+
             return AgentResult(
                 task_id=task.task_id,
                 agent=self.name,
                 status="completed",
                 result={
                     "sql": sql_repr,
-                    "records": records,
-                    "count": len(records),
+                    "records": fresh_records,
+                    "count": total_count,
+                    "rows_updated": rows_updated,
                     "plan": plan,
                     "message": exec_res.get("message"),
                     "requires_confirmation": False,
+                    "mutation_status": "success",
                 },
             )
 
-        # Fallback to legacy dispatch if dynamic execution was not successful
+        # If execution was not successful, return error with exact SQL and do NOT fall back to legacy SELECT
+        sql_repr = _format_sql_from_plan(plan)
+        err_msg = exec_res.get("message", f"Failed executing {action} on {table}")
+        if action in ("insert_row", "update_row", "delete_row", "bulk_update", "create_table", "add_column", "drop_column", "error"):
+            return AgentResult(
+                task_id=task.task_id,
+                agent=self.name,
+                status="failed",
+                error=err_msg,
+                result={
+                    "sql": sql_repr,
+                    "records": [],
+                    "count": 0,
+                    "rows_updated": 0,
+                    "plan": plan,
+                    "message": err_msg,
+                    "requires_confirmation": False,
+                    "mutation_status": "failed",
+                },
+            )
+
+        # Fallback to legacy dispatch only for read queries with no structured action
         return self._legacy_dispatch(task, structured_intent)
 
     def _sync_in_memory_mutation(self, action: str, plan: dict, params: dict) -> None:
@@ -213,6 +336,42 @@ class DBAgent(BaseAgent):
                         if not match:
                             filtered.append(s)
                     student_service._fallback_students = filtered
+            elif action == "bulk_update":
+                field = params.get("field")
+                operation = params.get("operation")
+                value = params.get("value")
+                filters = params.get("filters", [])
+                for idx, s in enumerate(students):
+                    s_dict = s.model_dump(by_alias=True)
+                    match = True
+                    for f in filters:
+                        fld = f.get("field")
+                        op = f.get("op", "eq")
+                        val = f.get("value")
+                        actual = s_dict.get(fld, getattr(s, fld, None))
+                        if actual is None:
+                            match = False
+                            break
+                        if op == "eq" and str(actual).lower() != str(val).lower():
+                            match = False
+                            break
+                    if match and field:
+                        curr = float(s_dict.get(field, getattr(s, field, 0.0)))
+                        val_num = float(value)
+                        if operation == "subtract":
+                            new_val = curr - val_num
+                        elif operation == "add":
+                            new_val = curr + val_num
+                        elif operation == "set":
+                            new_val = val_num
+                        elif operation == "multiply":
+                            new_val = curr * val_num
+                        else:
+                            new_val = curr
+                        s_dict[field] = round(new_val, 2)
+                        snake_field = "".join(["_" + c.lower() if c.isupper() else c for c in field]).lstrip("_")
+                        s_dict[snake_field] = round(new_val, 2)
+                        students[idx] = StudentRecord.model_validate(s_dict)
         except Exception as exc:
             logger.debug(f"[DBAgent] _sync_in_memory_mutation ignored: {exc}")
 

@@ -63,11 +63,35 @@ def _deterministic_fallback_plan(lens_output: Dict[str, Any]) -> Dict[str, Any]:
     cols = get_table_columns(tbl)
     numeric_fields = [k for k, v in cols.items() if str(v).lower() in ("numeric", "int", "integer", "float", "number") or k in ("cgpa", "attendance", "credits", "semester", "backlogs")]
 
-    if action in ALLOWED_ACTIONS:
+    if action in ALLOWED_ACTIONS and action not in ("compute_filter", "error"):
         row_id = lens_output.get("row_id") or lens_output.get("rowId") or lens_output.get("id") or params.get("row_id") or params.get("rowId") or params.get("id")
         if row_id:
             params["row_id"] = row_id
         return {"action": action, "table": tbl, "params": params}
+
+    # Analytical / Risk / Reasoning queries (e.g. "Find academically at-risk students and explain reasons")
+    # For analytical workflows, DB Agent's role is data retrieval for Pulse Analytics Agent
+    is_mutation = any(kw in query for kw in ("reduce", "decrease", "lower", "deduct", "increase", "raise", "boost", "add", "make", "set ", "update", "change", "modify", "delete", "remove", "drop", "insert", "create"))
+    if not is_mutation and (
+        any(kw in query for kw in ("at risk", "at-risk", "risk", "probation", "performance", "reason", "reasons", "analyze", "analytics"))
+        or lens_output.get("mode") == "analyze"
+        or input_intent.get("operation") == "analytics"
+    ):
+        dept_filters = []
+        if "computer science" in query or "cse" in query:
+            dept_filters.append({"field": "department", "op": "eq", "value": "Computer Science"})
+        elif "ai & ml" in query or "ai and ml" in query or "aiml" in query:
+            dept_filters.append({"field": "department", "op": "eq", "value": "AI & ML"})
+        elif "electronics" in query or "ece" in query:
+            dept_filters.append({"field": "department", "op": "eq", "value": "Electronics"})
+        elif "mechanical" in query or "mech" in query:
+            dept_filters.append({"field": "department", "op": "eq", "value": "Mechanical"})
+        elif "civil" in query:
+            dept_filters.append({"field": "department", "op": "eq", "value": "Civil"})
+        
+        if dept_filters:
+            return {"action": "filter_rows", "table": tbl, "params": {"filters": dept_filters}}
+        return {"action": "get_all_rows", "table": tbl, "params": {}}
 
     if "along with" in query or "and their" in query or ("student" in query and "course" in query):
         dept_val = None
@@ -96,17 +120,67 @@ def _deterministic_fallback_plan(lens_output: Dict[str, Any]) -> Dict[str, Any]:
             }
         }
 
-    if action == "insert":
-        row_data = lens_output.get("data", {})
+    if action == "insert" or action == "insert_row" or ("add" in query and ("new" in query or "student" in query or "row" in query or "record" in query)):
+        row_data = lens_output.get("data") or params.get("data") or {}
         return {"action": "insert_row", "table": tbl, "params": {"data": row_data}}
-    elif action == "update":
-        row_id = lens_output.get("row_id") or lens_output.get("rowId") or lens_output.get("id") or params.get("row_id") or params.get("rowId") or params.get("id")
-        return {"action": "update_row", "table": tbl, "params": {"row_id": row_id, "data": lens_output.get("data", {})}}
-    elif action == "delete" or action == "delete_row":
-        row_id = lens_output.get("row_id") or lens_output.get("rowId") or lens_output.get("id") or params.get("row_id") or params.get("rowId") or params.get("id")
-        return {"action": "delete_row", "table": tbl, "params": {"row_id": row_id}}
 
-    # Natural language update patterns (e.g., "Change Rahul's CGPA to 9.2", "set CGPA of STU-1001 to 9.5")
+    # Bulk math/set update (e.g., "reduce all the student cgpa by 1", "increase cgpa by 0.5 for CSE", "Make all students' CGPA 9")
+    if any(kw in query for kw in ("reduce", "decrease", "lower", "deduct", "minus", "increase", "raise", "boost", "add", "make", "set", "update", "change", "modify", "assign")):
+        import re
+        is_sub = any(kw in query for kw in ("reduce", "decrease", "lower", "deduct", "minus"))
+        is_add = any(kw in query for kw in ("increase", "raise", "boost"))
+        op_type = "subtract" if is_sub else ("add" if is_add else "set")
+
+        # Check for numeric column match
+        target_col = None
+        for col_name in cols.keys():
+            if col_name.lower() in query:
+                target_col = col_name
+                break
+        if not target_col:
+            if "cgpa" in query or "gpa" in query or "score" in query or "mark" in query:
+                target_col = "cgpa"
+            elif "attendance" in query:
+                target_col = "attendance"
+
+        # Check for value (e.g. "by 1", "to 9", "= 9", "by 0.5")
+        m_val = (
+            re.search(r'(?:by|to|as|=)\s*(\d+(?:\.\d+)?)', query, re.IGNORECASE)
+            or re.search(r'(\d+(?:\.\d+)?)\s*(?:points|marks|cgpa|gpa|percent|%)', query, re.IGNORECASE)
+            or re.search(r'\b(\d+(?:\.\d+)?)\b', query)
+        )
+        val = float(m_val.group(1)) if m_val else None
+
+        if target_col and val is not None and ("all" in query or is_sub or is_add or not any(name in query for name in ("rahul", "aarav", "ananya", "rohan", "priya", "devansh", "diya", "siddharth", "kavya", "aditya", "neha", "vikram"))):
+            # Check if department or status filter is in query
+            dept_filters = []
+            if "computer science" in query or "cse" in query:
+                dept_filters.append({"field": "department", "op": "eq", "value": "Computer Science"})
+            elif "ai & ml" in query or "ai and ml" in query or "aiml" in query:
+                dept_filters.append({"field": "department", "op": "eq", "value": "AI & ML"})
+            elif "electronics" in query or "ece" in query:
+                dept_filters.append({"field": "department", "op": "eq", "value": "Electronics"})
+            elif "mechanical" in query or "mech" in query:
+                dept_filters.append({"field": "department", "op": "eq", "value": "Mechanical"})
+            elif "civil" in query:
+                dept_filters.append({"field": "department", "op": "eq", "value": "Civil"})
+
+            return {
+                "action": "bulk_update",
+                "table": tbl,
+                "params": {
+                    "field": target_col,
+                    "operation": op_type,
+                    "value": val,
+                    "filters": dept_filters,
+                }
+            }
+
+    if action == "update" or action == "update_row":
+        row_id = lens_output.get("row_id") or lens_output.get("rowId") or lens_output.get("id") or params.get("row_id") or params.get("rowId") or params.get("id")
+        return {"action": "update_row", "table": tbl, "params": {"row_id": row_id, "data": lens_output.get("data", {}) or params.get("data", {})}}
+
+    # Natural language single row update patterns (e.g., "Change Rahul's CGPA to 9.2", "Set Aarav's CGPA to 9.5")
     if "change" in query or "update" in query or "set" in query or "modify" in query:
         import re
         m_cgpa = re.search(r'cgpa\s*(?:to|as|=)?\s*(\d+(?:\.\d+)?)', query, re.IGNORECASE) or re.search(r'to\s*(\d+(?:\.\d+)?)\s*cgpa', query, re.IGNORECASE)
@@ -129,9 +203,17 @@ def _deterministic_fallback_plan(lens_output: Dict[str, Any]) -> Dict[str, Any]:
                 "params": {"row_id": target_id, "data": {"cgpa": val}}
             }
 
-    # Natural language delete patterns (e.g., "Delete all students with CGPA below 5", "delete STU-1001")
-    if "delete" in query or "remove" in query or "drop students" in query:
+    # Natural language delete patterns (e.g., "Delete students with status inactive", "Delete all students with CGPA below 5", "delete STU-1001")
+    if "delete" in query or "remove" in query or "drop students" in query or action in ("delete", "delete_row"):
         import re
+        m_status = re.search(r'status\s*(?:is|=|to)?\s*([a-zA-Z]+)', query, re.IGNORECASE) or re.search(r'\b(inactive|active|probation|graduated|suspended)\b', query, re.IGNORECASE)
+        if m_status:
+            stat_val = m_status.group(1) if m_status.groups() else m_status.group(0)
+            return {
+                "action": "delete_row",
+                "table": tbl,
+                "params": {"filters": [{"field": "status", "op": "eq", "value": stat_val.capitalize()}]}
+            }
         m_below = re.search(r'(?:below|under|<|less than)\s*(\d+(?:\.\d+)?)', query, re.IGNORECASE)
         if m_below and ("cgpa" in query or "gpa" in query or "score" in query or "mark" in query):
             val = float(m_below.group(1))
@@ -248,7 +330,13 @@ def _post_validate_plan(plan: Dict[str, Any], lens_output: Dict[str, Any]) -> Di
     """
     table = plan.get("table", "students")
     params = plan.get("params", {})
-    query_str = str(lens_output.get("query", "")).lower()
+    query_str = str(
+        lens_output.get("query")
+        or lens_output.get("user_query")
+        or lens_output.get("prompt")
+        or (lens_output.get("input", {}).get("user_query") if isinstance(lens_output.get("input"), dict) else "")
+        or ""
+    ).lower()
 
     # 1. Un-registered field validation
     live_schema = get_live_schema(force_refresh=False)
@@ -284,6 +372,10 @@ def _post_validate_plan(plan: Dict[str, Any], lens_output: Dict[str, Any]) -> Di
                 f_val = flt.get("value")
 
                 if f_name and f_name not in known_cols:
+                    # Analytical / reasoning filter concepts (e.g., risk, at_risk, academic_risk, reasons)
+                    # should be stripped so DB Agent retrieves data for Pulse Analytics Agent rather than erroring
+                    if any(analytical_kw in f_name.lower() for analytical_kw in ("risk", "reason", "probation", "performance", "at_risk", "at-risk", "academic")):
+                        continue
                     return {"action": "error", "params": {"message": f"Specified field(s) do not exist in table '{table}'. Only registered numeric fields can be aggregated."}}
 
                 # Validate comparison operators (lt, lte, gt, gte)
@@ -328,14 +420,15 @@ def _post_validate_plan(plan: Dict[str, Any], lens_output: Dict[str, Any]) -> Di
                 if isinstance(w, dict):
                     f = w.get("field")
                     if not f or f not in known_cols:
-                        return {"action": "error", "params": {"message": f"Specified field(s) do not exist in table '{table}'. Only registered numeric fields can be weighted."}}
+                        return {"action": "error", "params": {"message": f"Specified field(s) do not exist in table '{table}'. Only registered numeric fields can be aggregated."}}
 
     # 3. Aggregate validation in compute_filter
     if plan.get("action") == "compute_filter":
         agg = params.get("aggregate")
         ALLOWED_AGGREGATES = {"average", "sum", "min", "max"}
         if agg not in ALLOWED_AGGREGATES:
-            if "cgpa" in lens_output or "credits" in lens_output or "semester" in lens_output or "department" in lens_output or "backlogs" in lens_output:
+            lens_str = str(lens_output).lower()
+            if any(k in lens_str for k in ("cgpa", "credits", "semester", "department", "backlogs", "risk", "at-risk", "student", "probation", "performance", "reason", "analyze")):
                 return _deterministic_fallback_plan(lens_output)
             return {
                 "action": "error",
@@ -399,35 +492,47 @@ RULES:
    {{"action": "drop_column", "table": "<existingTable>", "params": {{"column_name": "<existingColumnName>"}}}}
    Note: Dropping a column permanently removes that column's data with no history or rollback available. Table drops stay forbidden.
 
-5. INSERT ROW: If inserting a row, output:
+5. INSERT ROW: If inserting a row (e.g. "Add a new student", "insert into ..."), output:
    {{"action": "insert_row", "table": "<table>", "params": {{"data": {{...all row fields...}}}}}}
 
-6. UPDATE ROW: If updating a row, preserve the EXACT string values specified in input, including parenthetical text.
+6. UPDATE ROW: If updating a single row by ID/key/name (e.g. "Set Aarav's CGPA to 9.5", "Change Rahul's CGPA to 9.2"), output:
+   {{"action": "update_row", "table": "<table>", "params": {{"row_id": "<rowIdOrKey>", "data": {{"<col>": <val>}}}}}}
+   Preserve the EXACT string values specified in input, including parenthetical text.
 
-7. COMPUTED/FORMULA READS (compute_filter): If filtering or aggregating across existing numeric fields (allowed aggregates: "average", "sum", "min", "max"), output:
+7. BULK / ALL ROWS UPDATE (bulk_update): If updating or setting a column across all rows or rows matching filters (e.g. "Make all students' CGPA 9", "Set all status to Active", "Increase CGPA by 5 for Computer Science"):
+   {{"action": "bulk_update", "table": "<table>", "params": {{"field": "<columnName>", "operation": "set" | "add" | "subtract" | "multiply", "value": <val>, "filters": [...]}}}}
+   If updating ALL records in the table, pass "filters": [].
+
+8. DELETE ROW (delete_row): If deleting rows by ID or by condition (e.g. "Delete students with status inactive", "Delete STU-1001", "Remove students with CGPA below 5"):
+   {{"action": "delete_row", "table": "<table>", "params": {{"row_id": "<id>"}}}} OR {{"action": "delete_row", "table": "<table>", "params": {{"filters": [{{"field": "<col>", "op": "eq" | "lt" | "gt" | "lte" | "gte" | "neq", "value": <val>}}]}}}}
+
+9. COMPUTED/FORMULA READS (compute_filter): If filtering or aggregating across existing numeric fields (allowed aggregates: "average", "sum", "min", "max"), output:
    {{"action": "compute_filter", "table": "<table>", "params": {{"fields": ["field1", "field2"], "aggregate": "average" | "sum" | "min" | "max", "condition": {{"op": "gte" | "gt" | "lte" | "lt" | "eq" | "neq", "value": <num>}}, "filters": [...]}}}}
    Registered numeric fields include: cgpa, attendance, semester, credits, backlogs, japaneseScore, score, mark, price.
    Only return {{"action": "error"}} if a field requested truly does not exist in the table schema (e.g. physics_score, tuition_fee).
 
-8. WEIGHTED COMPUTE READS (weighted_compute): If calculating a weighted score across multiple numeric fields, output:
+10. WEIGHTED COMPUTE READS (weighted_compute): If calculating a weighted score across multiple numeric fields, output:
    {{"action": "weighted_compute", "table": "<table>", "params": {{"weights": [{{"field": "cgpa", "weight": 0.5}}, {{"field": "attendance", "weight": 0.5}}], "filters": [...], "sort": "desc" | "asc"}}}}
    CRITICAL: Weights MUST sum to 1.0 (100%). Weight objects contain ONLY "field" and "weight". Filter objects belong strictly in "filters".
 
-9. BOUNDED BULK UPDATES (bulk_update): If applying a mathematical operation across matched rows (e.g. "increase CGPA by 5 for all Computer Science students"), output:
-   {{"action": "bulk_update", "table": "<table>", "params": {{"filters": [{{"field": "department", "op": "eq", "value": "Computer Science"}}], "field": "cgpa", "operation": "add" | "subtract" | "set" | "multiply", "value": 5}}}}
+11. ROW IDENTIFIER KEY: For update_row, delete_row, and restore_row actions with a single row, ALWAYS use "row_id" (snake_case) as the key name in the params object. Example: {{"action": "restore_row", "table": "students", "params": {{"row_id": "STU-101"}}}}
 
-10. ROW IDENTIFIER KEY: For update_row, delete_row, and restore_row actions, ALWAYS use "row_id" (snake_case) as the key name in the params object. Example: {{"action": "restore_row", "table": "students", "params": {{"row_id": "STU-101"}}}}
-
-11. JOIN QUERIES (join_query): If the query requests data combining two related tables (e.g. "along with", "and their", "students in department X along with courses", "show instructor names for courses in X along with students"), output:
+12. JOIN QUERIES (join_query): If the query requests data combining two related tables (e.g. "along with", "and their", "students in department X along with courses", "show instructor names for courses in X along with students"), output:
    {{"action": "join_query", "table": "students", "params": {{"primary_table": "students", "join_table": "courses", "join_on": {{"primary_field": "department", "join_field": "department"}}, "primary_filters": [...], "join_filters": [...]}}}}
    If two requested tables have no logical relationship or cannot be joined, output:
    {{"action": "error", "params": {{"message": "Cannot join requested tables: no common relationship or join key found."}}}}
 
-12. FIELD PROJECTION (fields): If the query asks for specific fields/columns (e.g. "return name of 21CS003", "show name and email"), output "fields": ["name", ...] in the params object. If no specific fields are requested, omit "fields" so all columns are returned.
+13. FIELD PROJECTION (fields): If the query asks for specific fields/columns (e.g. "return name of 21CS003", "show name and email"), output "fields": ["name", ...] in the params object. If no specific fields are requested, omit "fields" so all columns are returned.
 
-13. Return ONLY a valid JSON object matching the schema:
+14. ANALYTICS / RISK / REASONING QUERIES: If the query asks for analytical insights, at-risk students, performance analysis, explanations, or probation analysis (e.g. "Find academically at-risk students and explain reasons", "Analyze academic performance"):
+   The database agent's responsibility is ONLY data retrieval. Output:
+   {{"action": "get_all_rows", "table": "students", "params": {{}}}}
+   (or with registered column filters like department if explicitly specified).
+   Do NOT generate non-existent columns (e.g., 'risk', 'academicRisk', 'reasons') or invalid compute_filter actions, because risk assessment and reasoning are performed downstream by Pulse Analytics Agent.
+
+15. Return ONLY a valid JSON object matching the schema:
    {{"action": "<action>", "table": "<table>", "params": {{<params>}}}}
-14. Do NOT output raw SQL or code. Output ONLY JSON.
+16. Do NOT output raw SQL or code. Output ONLY JSON.
 """
 
         user_content = json.dumps(lens_output)

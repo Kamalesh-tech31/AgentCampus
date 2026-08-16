@@ -103,14 +103,77 @@ def _build_legacy_metrics(records: List[Dict[str, Any]]) -> OrchestrationMetrics
 
 # ── Deterministic Fallback Plan ────────────────────────────────────────────────
 
-def _build_deterministic_plan(numeric_cols: list[str], categorical_cols: list[str]) -> dict:
+def _build_deterministic_plan(
+    user_request: str,
+    numeric_cols: list[str],
+    categorical_cols: list[str],
+) -> dict:
     """
-    Build a sensible default analysis plan when no LLM planner is available.
-    Produces useful insights from whatever columns are present.
+    Build an accurate deterministic analysis plan when no LLM planner is available.
+    Detects user intent dynamically from query keywords.
     """
-    ops = [{"tool": "count_records", "parameters": {}}]
+    q = user_request.lower()
 
-    for col in numeric_cols[:3]:  # avoid planning too many operations
+    # 1. Risk Analysis Intent
+    if any(k in q for k in ("risk", "at-risk", "probation", "backlog", "weak", "fail", "reasons")):
+        return {
+            "analysis_goal": "risk_analysis",
+            "strategy": "hybrid",
+            "operations": [
+                {"tool": "evaluate_risk", "parameters": {}},
+            ],
+            "reasoning": "Deterministic plan: user requested student risk identification and reasoning.",
+        }
+
+    # 2. Correlation Analysis Intent
+    if any(k in q for k in ("correlation", "relationship", "relate", "versus", " vs ", "scatter", "associate")):
+        f1 = "attendance" if "attendance" in numeric_cols else (numeric_cols[0] if numeric_cols else "attendance")
+        f2 = "cgpa" if "cgpa" in numeric_cols else (numeric_cols[1] if len(numeric_cols) > 1 else "cgpa")
+        return {
+            "analysis_goal": "correlation_analysis",
+            "strategy": "hybrid",
+            "operations": [
+                {"tool": "calculate_correlation", "parameters": {"field1": f1, "field2": f2}},
+            ],
+            "reasoning": "Deterministic plan: user requested bivariate correlation analysis.",
+        }
+
+    # 3. Weighted Ranking Intent
+    if any(k in q for k in ("rank", "weighted", "top 10", "top 5", "top performers", "80%", "70%")):
+        top_n = 10
+        import re
+        top_match = re.search(r"top\s+(\d+)", q)
+        if top_match:
+            top_n = int(top_match.group(1))
+
+        return {
+            "analysis_goal": "weighted_ranking",
+            "strategy": "hybrid",
+            "operations": [
+                {
+                    "tool": "calculate_weighted_ranking",
+                    "parameters": {"weights": {"cgpa": 0.80, "attendance": 0.20}, "top_n": top_n},
+                }
+            ],
+            "reasoning": "Deterministic plan: user requested multi-criteria weighted ranking.",
+        }
+
+    # 4. Department Comparison Intent
+    if any(k in q for k in ("compare", "department", "by dept", "across dept")):
+        grp_col = "department" if "department" in categorical_cols else (categorical_cols[0] if categorical_cols else "department")
+        cmp_col = "cgpa" if "cgpa" in numeric_cols else (numeric_cols[0] if numeric_cols else "cgpa")
+        return {
+            "analysis_goal": "group_comparison",
+            "strategy": "hybrid",
+            "operations": [
+                {"tool": "compare_groups", "parameters": {"group_by": grp_col, "compare_field": cmp_col}},
+            ],
+            "reasoning": "Deterministic plan: user requested group comparison.",
+        }
+
+    # 5. General Summary Fallback
+    ops = [{"tool": "count_records", "parameters": {}}]
+    for col in numeric_cols[:3]:
         ops.append({"tool": "calculate_average", "parameters": {"field": col}})
         ops.append({"tool": "calculate_min", "parameters": {"field": col}})
         ops.append({"tool": "calculate_max", "parameters": {"field": col}})
@@ -122,13 +185,13 @@ def _build_deterministic_plan(numeric_cols: list[str], categorical_cols: list[st
             "parameters": {"group_by": primary_cat, "metrics": ["average", "min", "max", "count"]},
         })
 
-    ops.append({"tool": "find_at_risk_records", "parameters": {"rules": "auto_or_explicit"}})
+    ops.append({"tool": "evaluate_risk", "parameters": {}})
 
     return {
         "analysis_goal": "general_summary",
         "strategy": "tool_based",
         "operations": ops,
-        "reasoning": "Deterministic fallback — no LLM planner available.",
+        "reasoning": "Deterministic fallback — generic overview across numeric and categorical columns.",
     }
 
 
@@ -193,6 +256,7 @@ class AnalyticsAgent(BaseAgent):
         if plan is None:
             logger.info("[Pulse] No LLM plan — using deterministic fallback plan.")
             plan = _build_deterministic_plan(
+                user_request,
                 dataset_profile["numeric_columns"],
                 dataset_profile["categorical_columns"],
             )
@@ -206,7 +270,7 @@ class AnalyticsAgent(BaseAgent):
 
         # ── Step 4: Execute operations using analytics tools ──────────────────
         from app.services.pulse.analytics_tools import run_tool
-        from app.services.pulse.risk_service import find_at_risk_records, rank_risk_severity
+        from app.services.pulse.risk_service import evaluate_risk, find_at_risk_records, rank_risk_severity
         from app.services.pulse.planner_service import STRATEGY_LLM_REASONING
 
         strategy = plan.get("strategy", "tool_based")
@@ -222,8 +286,8 @@ class AnalyticsAgent(BaseAgent):
                 params = op.get("parameters", {})
 
                 # Route risk tools to risk_service
-                if tool_name == "find_at_risk_records":
-                    result = find_at_risk_records(records, **params)
+                if tool_name in ("evaluate_risk", "find_at_risk_records"):
+                    result = evaluate_risk(records, **params)
                 elif tool_name == "rank_risk_severity":
                     result = rank_risk_severity(records)
                 else:

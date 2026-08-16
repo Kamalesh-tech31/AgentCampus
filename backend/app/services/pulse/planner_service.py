@@ -38,9 +38,10 @@ Available analytics tools (use only these):
 - calculate_distribution(field, bins) — value frequency distribution
 - calculate_correlation(field1, field2) — Pearson correlation coefficient
 - detect_outliers(field, method) — method: iqr or zscore
-- rank_records(field, order) — rank all records
-- top_n_records(field, n) — top N by field
-- bottom_n_records(field, n) — bottom N by field
+- calculate_weighted_ranking(weights, top_n) — deterministic multi-criteria composite ranking with scale normalization (e.g. weights={"cgpa": 0.80, "attendance": 0.20}, top_n=10)
+- rank_records(field, order) — rank all records by single field
+- top_n_records(field, n) — top N by single numeric field
+- bottom_n_records(field, n) — bottom N by single numeric field
 - compare_groups(group_by, compare_field, metrics) — compare group means
 - find_at_risk_records(rules) — identify records needing attention
 - rank_risk_severity() — rank records by combined risk
@@ -62,6 +63,16 @@ Execution strategies:
 - "hybrid": Run Python tools first, then the LLM interprets the numerical results.
 - "llm_reasoning": The request is too open-ended or qualitative for tools alone.
 
+GUIDELINES FOR TOOL SELECTION:
+1. If the user asks to "rank", "top N students", or gives weighted criteria (e.g. "Rank the top 10 students using 80% marks and 20% attendance"):
+   Use tool: "calculate_weighted_ranking", parameters: {{"weights": {{"cgpa": 0.80, "attendance": 0.20}}, "top_n": 10}}, strategy: "hybrid".
+2. If comparing departments/groups:
+   Use tool: "compare_groups", parameters: {{"group_by": "department", "compare_field": "cgpa"}}, strategy: "hybrid".
+3. If asking for averages/statistics:
+   Use tools: "calculate_average", "calculate_min", "calculate_max", strategy: "tool_based".
+4. If asking for at-risk/probation students:
+   Use tool: "find_at_risk_records", strategy: "hybrid".
+
 Respond ONLY with a valid JSON object. No text outside JSON.
 
 JSON format:
@@ -76,9 +87,6 @@ JSON format:
   ],
   "reasoning": "brief explanation of why this plan was chosen"
 }}
-
-For "llm_reasoning" strategy, set operations to an empty list [].
-For "hybrid" strategy, list the Python operations; interpretation will be added automatically.
 
 User request:
 {user_request}

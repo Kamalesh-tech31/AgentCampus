@@ -114,16 +114,27 @@ def generic_get_all(
     elif isinstance(fields, str) and fields.strip() in known_fields:
         select_clause = fields.strip()
 
-    query = supabase.table(table).select(select_clause, count="exact")
+    data = []
+    total = 0
+    try:
+        query = supabase.table(table).select(select_clause, count="exact")
+        if limit is not None:
+            query = query.limit(limit)
+        response = query.execute()
+        data = response.data or []
+        total = response.count if response.count is not None else len(data)
+    except Exception as exc:
+        logger.warning(f"[GenericGetAll] Supabase query failed: {exc}")
 
-    if limit is not None:
-        query = query.limit(limit)
+    if not data and table.lower() == "students":
+        from app.services.student_service import student_service
+        students = student_service.get_students()
+        total = len(students)
+        if limit is not None:
+            students = students[:limit]
+        data = [s.model_dump(by_alias=True) for s in students]
 
-    response = query.execute()
-    data = response.data or []
-    total = response.count if response.count is not None else len(data)
     truncated = (total > len(data))
-
     return data, truncated, total
 
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Send, 
   Sparkles, 
@@ -9,10 +9,10 @@ import {
   AlertTriangle, 
   ShieldCheck, 
   LineChart,
-  Lightbulb
+  RotateCw
 } from 'lucide-react';
 import { AppMode, OutputFormat } from '../types';
-import { validateColumn } from '../services/api';
+import { getFreshSuggestions, SuggestionItem } from '../data/suggestions';
 
 interface BottomInputBarProps {
   currentMode: AppMode;
@@ -20,28 +20,8 @@ interface BottomInputBarProps {
   onSelectFormat: (fmt: OutputFormat) => void;
   onSubmitPrompt: (prompt: string) => void;
   isExecuting: boolean;
+  usedPrompts?: string[];
 }
-
-const MODE_PROMPTS: Record<AppMode, string[]> = {
-  modify: [
-    "Change Rahul's CGPA to 9.2",
-    "Update Arun's attendance to 95%",
-    "Delete all students with CGPA below 5",
-    "Add new student Ananya Roy in CSE with 9.1 CGPA"
-  ],
-  explore: [
-    "Show the top 10 CSE students",
-    "Find students with CGPA above 9",
-    "Show all students in Electronics with attendance below 75%",
-    "List all students ordered by roll number"
-  ],
-  analyze: [
-    "Rank the top 10 students using 80% marks and 20% LeetCode count",
-    "Find academically at-risk students and explain reasons",
-    "Compare CSE and ECE department performance",
-    "Analyze attendance correlation with CGPA"
-  ]
-};
 
 export const BottomInputBar: React.FC<BottomInputBarProps> = ({
   currentMode,
@@ -49,47 +29,19 @@ export const BottomInputBar: React.FC<BottomInputBarProps> = ({
   onSelectFormat,
   onSubmitPrompt,
   isExecuting,
+  usedPrompts = [],
 }) => {
   const [prompt, setPrompt] = useState('');
-  const [suggestion, setSuggestion] = useState<string | null>(null);
+  const [rotationOffset, setRotationOffset] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  // Check column names on user typing
-  useEffect(() => {
-    if (!prompt.trim() || prompt.length < 3) {
-      setSuggestion(null);
-      return;
-    }
-
-    const timer = setTimeout(async () => {
-      // Extract potential column candidates (words with letters/numbers)
-      const words = prompt.match(/\b[a-zA-Z_]{3,}\b/g) || [];
-      for (const word of words) {
-        const lower = word.toLowerCase();
-        if (['the', 'and', 'with', 'for', 'all', 'top', 'find', 'show', 'list', 'using', 'rank', 'change', 'update', 'delete', 'students'].includes(lower)) {
-          continue;
-        }
-        try {
-          const res = await validateColumn('students', word);
-          if (!res.valid && res.suggestion && res.suggestion.toLowerCase() !== lower) {
-            setSuggestion(res.suggestion);
-            return;
-          }
-        } catch {
-          // ignore validation network hiccups
-        }
-      }
-      setSuggestion(null);
-    }, 400);
-
-    return () => clearTimeout(timer);
-  }, [prompt]);
-
+  // Reset prompt on execution start / finish if needed
   const handleSubmit = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!prompt.trim() || isExecuting) return;
-    onSubmitPrompt(prompt.trim());
+    const submitted = prompt.trim();
+    onSubmitPrompt(submitted);
     setPrompt('');
-    setSuggestion(null);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -99,47 +51,62 @@ export const BottomInputBar: React.FC<BottomInputBarProps> = ({
     }
   };
 
-  const applySuggestion = (sug: string) => {
-    // Append or replace the suggestion in prompt
-    setPrompt(prev => `${prev} (${sug})`);
-    setSuggestion(null);
+  const handleSelectSuggestion = (suggestionPrompt: string) => {
+    setPrompt(suggestionPrompt);
+    if (inputRef.current) {
+      inputRef.current.focus();
+    }
+  };
+
+  const handleRotateSuggestions = () => {
+    setRotationOffset(prev => prev + 1);
   };
 
   const hasText = prompt.trim().length > 0;
-  const examplePrompts = MODE_PROMPTS[currentMode] || MODE_PROMPTS.explore;
+  
+  // Calculate fresh contextual suggestions based on current mode and history
+  const allFresh = getFreshSuggestions(currentMode, usedPrompts, 8);
+  // Apply rotation window of 3 items
+  const displaySuggestions: SuggestionItem[] = [];
+  if (allFresh.length > 0) {
+    const startIndex = (rotationOffset * 3) % allFresh.length;
+    for (let i = 0; i < Math.min(3, allFresh.length); i++) {
+      displaySuggestions.push(allFresh[(startIndex + i) % allFresh.length]);
+    }
+  }
 
   return (
-    <div className="bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-t border-slate-200 dark:border-slate-800 p-3 sm:p-4 shrink-0 z-10 select-none transition-colors">
+    <div className="bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-slate-200/80 dark:border-slate-800/80 p-3 sm:p-4 shrink-0 z-20 select-none transition-colors">
       <div className="max-w-5xl mx-auto space-y-3">
         {/* Top Controls: Mode Status & Output Format Selector */}
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
           {/* Mode Guidance Tag */}
           <div className="flex items-center gap-2">
             {currentMode === 'modify' && (
-              <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800 font-medium">
-                <AlertTriangle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-                <span>This mode can modify your database.</span>
+              <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 border border-amber-200/80 dark:border-amber-800/80 font-medium">
+                <AlertTriangle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                <span>Modify Mode: Operations require confirmation before execution.</span>
               </span>
             )}
             {currentMode === 'explore' && (
-              <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-50 dark:bg-blue-950/40 text-blue-800 dark:text-blue-300 border border-blue-200 dark:border-blue-800 font-medium">
-                <ShieldCheck className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-                <span>Explore mode is read-only. Your database will not be modified.</span>
+              <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-50 dark:bg-blue-950/40 text-blue-800 dark:text-blue-300 border border-blue-200/80 dark:border-blue-800/80 font-medium">
+                <ShieldCheck className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
+                <span>Explore Mode: Read-only queries without data alteration.</span>
               </span>
             )}
             {currentMode === 'analyze' && (
-              <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-indigo-50 dark:bg-indigo-950/40 text-indigo-800 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 font-medium">
-                <LineChart className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-                <span>Analyze mode: Pulse statistics and Scribe report generation.</span>
+              <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-indigo-50 dark:bg-indigo-950/40 text-indigo-800 dark:text-indigo-300 border border-indigo-200/80 dark:border-indigo-800/80 font-medium">
+                <LineChart className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />
+                <span>Analyze Mode: Statistical models, factor assessment & multi-format reports.</span>
               </span>
             )}
           </div>
 
           {/* Analyze Mode Output Format Selector */}
           {currentMode === 'analyze' && (
-            <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-0.5 rounded-xl border border-slate-200 dark:border-slate-700">
-              <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 px-2 uppercase tracking-wider">
-                Output:
+            <div className="flex items-center gap-1 bg-slate-100/90 dark:bg-slate-800/90 p-0.5 rounded-xl border border-slate-200 dark:border-slate-700/80">
+              <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 px-2 uppercase tracking-wider">
+                Export:
               </span>
               {(['text', 'excel', 'pdf', 'ppt'] as OutputFormat[]).map((fmt) => (
                 <button
@@ -147,9 +114,9 @@ export const BottomInputBar: React.FC<BottomInputBarProps> = ({
                   type="button"
                   onClick={() => onSelectFormat(fmt)}
                   disabled={isExecuting}
-                  className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+                  className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
                     selectedFormat === fmt
-                      ? 'bg-indigo-600 text-white shadow-xs'
+                      ? 'bg-indigo-600 text-white shadow-2xs'
                       : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                   }`}
                 >
@@ -164,27 +131,14 @@ export const BottomInputBar: React.FC<BottomInputBarProps> = ({
           )}
         </div>
 
-        {/* Suggestion Notification Chip */}
-        {suggestion && (
-          <div className="flex items-center gap-2 text-xs bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 px-3 py-1.5 rounded-xl text-amber-800 dark:text-amber-300 animate-in fade-in">
-            <Lightbulb className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-            <span>Did you mean column <code className="px-1 py-0.5 bg-amber-100 dark:bg-amber-900/60 rounded font-mono font-bold text-amber-900 dark:text-amber-200">`{suggestion}`</code>?</span>
-            <button
-              onClick={() => applySuggestion(suggestion)}
-              className="ml-auto text-[11px] font-semibold text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
-            >
-              Use `{suggestion}`
-            </button>
-          </div>
-        )}
-
-        {/* Main Input Form */}
+        {/* Main Input Form with Non-Invasive Dark Focus Styling */}
         <form onSubmit={handleSubmit} className="flex items-center gap-2.5">
-          <div className="relative flex-1 flex items-center">
+          <div className="relative flex-1 flex items-center bg-slate-100/80 dark:bg-slate-800/80 border border-slate-300/80 dark:border-slate-700/80 rounded-2xl transition-all shadow-2xs focus-within:border-blue-500 dark:focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-500/20 focus-within:bg-white dark:focus-within:bg-slate-900">
             <div className="absolute left-4 text-blue-600 dark:text-blue-400 pointer-events-none">
               <Sparkles className="w-4 h-4" />
             </div>
             <input
+              ref={inputRef}
               type="text"
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
@@ -195,19 +149,19 @@ export const BottomInputBar: React.FC<BottomInputBarProps> = ({
                   ? "Enter database change... e.g. \"Change Rahul's CGPA to 9.2\", \"Delete students below 5 CGPA\""
                   : currentMode === 'explore'
                   ? "Search database records... e.g. \"Show top 10 CSE students\", \"Find students with CGPA above 9\""
-                  : "Request analysis or report... e.g. \"Rank top 10 by 80% marks and 20% LeetCode\", \"Find at-risk students\""
+                  : "Request analysis or report... e.g. \"Find academically at-risk students\", \"Rank top 10 students\""
               }
-              className="w-full bg-slate-50 dark:bg-slate-800/90 border border-slate-300 dark:border-slate-700 rounded-2xl pl-11 pr-24 py-3 text-xs sm:text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:border-blue-600 dark:focus:border-blue-500 focus:ring-3 focus:ring-blue-500/20 disabled:opacity-50 transition-all shadow-xs"
+              className="w-full bg-transparent border-none outline-none ring-0 shadow-none pl-11 pr-24 py-3.5 text-xs sm:text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-0 font-normal"
             />
             <div className="absolute right-3.5 text-[11px] text-slate-400 hidden sm:block pointer-events-none">
-              Press <kbd className="px-1.5 py-0.5 bg-slate-200 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded text-[10px] text-slate-600 dark:text-slate-300 font-mono">Enter</kbd>
+              Press <kbd className="px-1.5 py-0.5 bg-slate-200 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded text-[10px] text-slate-600 dark:text-slate-300 font-mono font-semibold">Enter</kbd>
             </div>
           </div>
 
           <button
             type="submit"
             disabled={!hasText || isExecuting}
-            className={`flex items-center gap-2 px-5 py-3 text-xs font-semibold rounded-2xl transition-all shrink-0 ${
+            className={`flex items-center gap-2 px-5 py-3.5 text-xs font-bold rounded-2xl transition-all shrink-0 ${
               hasText && !isExecuting
                 ? currentMode === 'modify'
                   ? 'bg-amber-600 hover:bg-amber-700 text-white shadow-md active:scale-95 cursor-pointer'
@@ -224,28 +178,53 @@ export const BottomInputBar: React.FC<BottomInputBarProps> = ({
               </>
             ) : (
               <>
-                <span>Run {currentMode === 'modify' ? 'Mutation' : currentMode === 'explore' ? 'Explore' : 'Analysis'}</span>
+                <span>Run {currentMode === 'modify' ? 'Mutation' : currentMode === 'explore' ? 'Query' : 'Analysis'}</span>
                 <Send className="w-3.5 h-3.5" />
               </>
             )}
           </button>
         </form>
 
-        {/* Quick Example Prompt Chips */}
-        <div className="flex items-center gap-1.5 overflow-x-auto py-0.5 custom-scrollbar text-[11px]">
-          <span className="text-slate-400 dark:text-slate-500 font-medium shrink-0">Try:</span>
-          {examplePrompts.map((p, idx) => (
-            <button
-              key={idx}
-              type="button"
-              onClick={() => setPrompt(p)}
-              disabled={isExecuting}
-              className="px-2.5 py-1 rounded-full bg-slate-100 dark:bg-slate-800 hover:bg-blue-50 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 border border-slate-200 dark:border-slate-700 transition-all whitespace-nowrap cursor-pointer disabled:opacity-50"
-            >
-              {p}
-            </button>
-          ))}
-        </div>
+        {/* Dynamic Suggested Queries with Context and Clean Rotation */}
+        {displaySuggestions.length > 0 && (
+          <div className="flex items-center gap-2 overflow-x-auto py-0.5 custom-scrollbar text-[11px]">
+            <div className="flex items-center gap-1 text-slate-400 dark:text-slate-500 font-semibold uppercase tracking-wider text-[10px] shrink-0">
+              <Sparkles className="w-3 h-3 text-blue-500/80" />
+              <span>Suggested:</span>
+            </div>
+            
+            <div className="flex items-center gap-1.5 flex-1 overflow-x-auto custom-scrollbar">
+              {displaySuggestions.map((sug) => (
+                <button
+                  key={sug.id}
+                  type="button"
+                  onClick={() => handleSelectSuggestion(sug.prompt)}
+                  disabled={isExecuting}
+                  className="px-2.5 py-1 rounded-xl bg-slate-100/90 dark:bg-slate-800/90 hover:bg-blue-50 dark:hover:bg-slate-700/80 text-slate-700 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 border border-slate-200/80 dark:border-slate-700/80 hover:border-blue-300 dark:hover:border-blue-600 transition-all whitespace-nowrap cursor-pointer disabled:opacity-50 text-[11px] flex items-center gap-1.5 shadow-2xs group"
+                  title={sug.description}
+                >
+                  <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 group-hover:text-blue-500 uppercase tracking-wider">
+                    {sug.category}
+                  </span>
+                  <span className="text-slate-300 dark:text-slate-600">•</span>
+                  <span className="truncate max-w-[280px]">"{sug.prompt}"</span>
+                </button>
+              ))}
+            </div>
+
+            {allFresh.length > 3 && (
+              <button
+                type="button"
+                onClick={handleRotateSuggestions}
+                disabled={isExecuting}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0 cursor-pointer"
+                title="Show more suggested queries"
+              >
+                <RotateCw className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

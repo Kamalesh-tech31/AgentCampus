@@ -792,7 +792,7 @@ def derive_action(
             return "delete_row"
         if any(kw in query_lower for kw in ("restore", "revert", "undo")):
             return "restore_row"
-        if any(kw in query_lower for kw in ("increase", "decrease", "multiply", "bulk")):
+        if any(kw in query_lower for kw in ("increase", "decrease", "reduce", "lower", "deduct", "multiply", "bulk")):
             return "bulk_update"
         if row_id or any(kw in query_lower for kw in ("update", "set ", "change")):
             return "update_row"
@@ -934,7 +934,7 @@ def detect_operation(query_lower: str) -> str:
     analytics_kw = [
         "average", "avg", "highest", "lowest", "metrics", "percentile",
         "analytics", "distribution", "statistic", "breakdown",
-        "calculate", "compute", "how many", "count",
+        "calculate", "compute", "how many", "count", "at risk", "at-risk", "risk", "probation", "performance",
     ]
     if any(kw in query_lower for kw in analytics_kw):
         return "analytics"

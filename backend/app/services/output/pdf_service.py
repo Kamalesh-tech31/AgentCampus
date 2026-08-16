@@ -228,7 +228,208 @@ def _add_section_header(story: list, title: str, styles: dict, color=MID_BLUE):
 def _generate_fallback(story: list, records: list[dict], metrics: Optional[dict], insight: Optional[str], styles: dict, pulse_data: Optional[dict] = None):
     """Deterministic fallback logic for PDF generation."""
     if pulse_data:
-        # Dynamic fallback based on Pulse results
+        # ── 1. Specialized Analytical PDF for Weighted Ranking ────────────────
+        if pulse_data.get("analysis_type") == "weighted_ranking" or "ranking" in pulse_data:
+            total_recs = pulse_data.get("records_analyzed", len(records))
+            top_recs = pulse_data.get("ranking") or (pulse_data.get("tables", {}).get("top_performers", []))
+            formula = pulse_data.get("formula", "Weighted Score = ((CGPA / 10) × 100 × 0.80) + (Attendance × 0.20)")
+            stats = pulse_data.get("statistics", {})
+
+            # Executive Summary
+            _add_section_header(story, "Executive Summary", styles)
+            max_sc = stats.get("highest_weighted_score")
+            if max_sc is None and top_recs:
+                max_sc = top_recs[0].get("_weighted_score", 0.0)
+            story.append(Paragraph(
+                f"This analytical report presents the multi-criteria weighted ranking for <b>{total_recs}</b> students across academic performance (80%) and attendance (20%). "
+                f"The top <b>{len(top_recs)}</b> performers were selected deterministically based on standardized scores. "
+                f"The highest weighted score achieved in the cohort is <b>{max_sc:.2f}</b>.",
+                styles["body"]
+            ))
+            story.append(Spacer(1, 0.4 * cm))
+
+            # Methodology & Scoring Model
+            _add_section_header(story, "Methodology & Scoring Model", styles)
+            story.append(Paragraph(f"• <b>Academic Scale Normalization:</b> CGPA is converted from a 10-point scale to a 100-point academic score via <code>(CGPA / 10) × 100</code>.", styles["bullet"]))
+            story.append(Paragraph(f"• <b>Attendance Component:</b> Attendance percentage (0–100%) is evaluated directly.", styles["bullet"]))
+            story.append(Paragraph(f"• <b>Composite Formula:</b> <code>{formula}</code>", styles["bullet"]))
+            story.append(Paragraph(f"• <b>Deterministic Tie-Breaking:</b> {pulse_data.get('tie_breaking_rule', 'Positions are resolved by higher CGPA, followed by attendance and roll number.')}", styles["bullet"]))
+            story.append(Spacer(1, 0.4 * cm))
+
+            # Top Performers Table
+            _add_section_header(story, f"Top {len(top_recs)} Confirmed Performers", styles)
+            story.append(_records_table(top_recs, styles))
+            story.append(Spacer(1, 0.5 * cm))
+
+            # Embedded Ranking Chart
+            from app.services.output.chart_service import ranking_bar_chart, render_dynamic_chart
+            chart_bytes = None
+            if pulse_data.get("chart_data") and "ranking_bar" in pulse_data["chart_data"]:
+                try:
+                    chart_bytes = render_dynamic_chart(pulse_data["chart_data"]["ranking_bar"])
+                except Exception as exc:
+                    logger.warning(f"[PDFService] Dynamic ranking chart failed: {exc}")
+            if not chart_bytes and top_recs:
+                try:
+                    chart_bytes = ranking_bar_chart(top_recs)
+                except Exception as exc:
+                    logger.warning(f"[PDFService] Fallback ranking bar chart failed: {exc}")
+
+            if chart_bytes:
+                _add_section_header(story, "Performance Distribution Chart", styles)
+                img = Image(io.BytesIO(chart_bytes), width=14.5 * cm, height=7.2 * cm)
+                story.append(img)
+                story.append(Spacer(1, 0.5 * cm))
+
+            # Analysis & Insights
+            if insight or pulse_data.get("insights"):
+                _add_section_header(story, "Analysis & Interpretation", styles)
+                ins_text = insight or " ".join(pulse_data.get("insights", []))
+                story.append(Paragraph(ins_text, styles["body"]))
+                story.append(Spacer(1, 0.4 * cm))
+
+            # Tie Analysis
+            ties = pulse_data.get("ties", [])
+            if ties:
+                _add_section_header(story, "Tie & Cutoff Observations", styles)
+                for t in ties[:4]:
+                    story.append(Paragraph(
+                        f"• <b>Score {t['weighted_score']:.2f} Collision:</b> {t['count']} students ({', '.join(t['students'][:3])}). Resolved deterministically via higher CGPA and attendance.",
+                        styles["bullet"]
+                    ))
+                story.append(Spacer(1, 0.4 * cm))
+
+            return
+
+        # ── 2. Specialized Analytical PDF for Academic Risk Assessment ────────
+        if pulse_data.get("analysis_type") == "risk_analysis" or "at_risk" in pulse_data or "at_risk_students" in pulse_data.get("tables", {}):
+            at_risk_recs = pulse_data.get("at_risk") or pulse_data.get("tables", {}).get("at_risk_students", [])
+            total_recs = pulse_data.get("total_records", pulse_data.get("records_analyzed", len(records)))
+            at_risk_count = pulse_data.get("at_risk_count", len(at_risk_recs))
+            safe_count = pulse_data.get("safe_count", total_recs - at_risk_count)
+            at_risk_pct = pulse_data.get("at_risk_percentage", round((at_risk_count / max(1, total_recs)) * 100.0, 1))
+            sev_dist = pulse_data.get("severity_distribution", {})
+            crit_count = sev_dist.get("Critical", 0)
+            high_count = sev_dist.get("High", 0)
+
+            # Executive Summary
+            _add_section_header(story, "Executive Summary", styles)
+            story.append(Paragraph(
+                f"This comprehensive institutional risk assessment evaluates <b>{total_recs}</b> student records against academic thresholds, attendance compliance, probation status, and backlog metrics. "
+                f"A total of <b>{at_risk_count}</b> students (<b>{at_risk_pct}%</b> of the cohort) have been identified as meeting at-risk criteria, with <b>{crit_count}</b> categorized as Critical severity and <b>{high_count}</b> as High priority for immediate intervention.",
+                styles["body"]
+            ))
+            story.append(Spacer(1, 0.3 * cm))
+
+            # Dominant Pattern Callout
+            dom_pat = pulse_data.get("dominant_risk_pattern")
+            if dom_pat:
+                story.append(Paragraph(f"• <b>Dominant Risk Pattern:</b> {dom_pat}", styles["bullet"]))
+                story.append(Spacer(1, 0.3 * cm))
+
+            # Methodology & Scoring Model Box
+            _add_section_header(story, "Risk Methodology & Threshold Rules", styles)
+            story.append(Paragraph("• <b>Academic Threshold:</b> CGPA < 6.50 contributes up to 40 risk points based on distance below requirement.", styles["bullet"]))
+            story.append(Paragraph("• <b>Attendance Threshold:</b> Attendance < 75.0% contributes up to 30 risk points.", styles["bullet"]))
+            story.append(Paragraph("• <b>Probation Status:</b> Active probation contributes 20 baseline points with automatic High/Critical priority escalation.", styles["bullet"]))
+            story.append(Paragraph("• <b>Course Backlogs:</b> Each active backlog contributes 5 risk points (max 10 points).", styles["bullet"]))
+            story.append(Paragraph("• <b>Severity Scale:</b> Critical (Score ≥ 60 or Probation + Low Metrics), High (Score ≥ 40), Moderate (Score ≥ 20), Low (> 0), Safe (0).", styles["bullet"]))
+            story.append(Spacer(1, 0.4 * cm))
+
+            # Visual Risk Charts
+            from app.services.output.chart_service import render_dynamic_chart
+            c_data = pulse_data.get("chart_data", {})
+            for chart_key in ("risk_factors_bar", "risk_severity_pie"):
+                if chart_key in c_data:
+                    try:
+                        c_bytes = render_dynamic_chart(c_data[chart_key])
+                        if c_bytes:
+                            _add_section_header(story, c_data[chart_key].get("title", "Risk Visualization"), styles)
+                            img = Image(io.BytesIO(c_bytes), width=14.5 * cm, height=6.8 * cm)
+                            story.append(img)
+                            story.append(Spacer(1, 0.4 * cm))
+                    except Exception as exc:
+                        logger.warning(f"[PDFService] Risk chart {chart_key} failed: {exc}")
+
+            # Department-Level Risk Analysis
+            dept_recs = pulse_data.get("department_analysis") or pulse_data.get("tables", {}).get("department_risk", [])
+            if dept_recs:
+                _add_section_header(story, "Department-Level Risk Breakdown", styles)
+                story.append(_records_table(dept_recs, styles))
+                story.append(Spacer(1, 0.4 * cm))
+
+            # Comprehensive Multi-Page At-Risk Student Table (ALL matching records preserved)
+            if at_risk_recs:
+                _add_section_header(story, f"Complete At-Risk Student Roster ({len(at_risk_recs)} records)", styles)
+                story.append(_records_table(at_risk_recs, styles))
+                story.append(Spacer(1, 0.4 * cm))
+
+            # Data-Driven Recommendations
+            recs = pulse_data.get("data_driven_recommendations", [])
+            if recs:
+                _add_section_header(story, "Institutional Recommendations & Early Interventions", styles)
+                for r in recs:
+                    story.append(Paragraph(f"• {r}", styles["bullet"]))
+                story.append(Spacer(1, 0.4 * cm))
+
+            return
+
+        # ── 3. Specialized Analytical PDF for Correlation & Regression ────────
+        if pulse_data.get("analysis_type") == "correlation_analysis" or "correlation" in pulse_data:
+            f1 = pulse_data.get("field1_label") or pulse_data.get("field1") or "Attendance"
+            f2 = pulse_data.get("field2_label") or pulse_data.get("field2") or "CGPA"
+            r_val = pulse_data.get("correlation", 0.0)
+            r_sq = pulse_data.get("r_squared", round(r_val ** 2, 4))
+            strength = pulse_data.get("strength", "moderate")
+            direction = pulse_data.get("direction", "positive")
+            reg = pulse_data.get("regression", {})
+            interp = pulse_data.get("interpretation", "")
+            n_obs = pulse_data.get("records_analyzed", len(records))
+
+            # Executive Summary
+            _add_section_header(story, "Executive Summary", styles)
+            story.append(Paragraph(
+                f"This empirical analysis evaluates the bivariate relationship between <b>{f1}</b> and <b>{f2}</b> across <b>{n_obs}</b> student observations. "
+                f"The statistical evaluation measured a <b>{strength} {direction} correlation</b> (Pearson <i>r</i> = <b>{r_val:.4f}</b>) with a coefficient of determination (<i>R²</i>) of <b>{r_sq:.4f}</b>.",
+                styles["body"]
+            ))
+            story.append(Spacer(1, 0.3 * cm))
+
+            # Model & Methodology Box
+            _add_section_header(story, "Methodology & Linear Regression Model", styles)
+            story.append(Paragraph(f"• <b>Pearson Correlation Coefficient (r):</b> <code>{r_val:.4f}</code> ({strength} {direction} association)", styles["bullet"]))
+            story.append(Paragraph(f"• <b>Explained Variance (R²):</b> <code>{r_sq:.4f}</code> ({r_sq * 100:.1f}% of variance explained)", styles["bullet"]))
+            if reg.get("formula"):
+                story.append(Paragraph(f"• <b>Fitted Regression Model:</b> <code>{reg['formula']}</code> (Slope = {reg.get('slope')}, Intercept = {reg.get('intercept')})", styles["bullet"]))
+            story.append(Spacer(1, 0.4 * cm))
+
+            # Scatter Plot Visualization
+            from app.services.output.chart_service import render_dynamic_chart
+            if pulse_data.get("chart_data") and "scatter_plot" in pulse_data["chart_data"]:
+                try:
+                    c_bytes = render_dynamic_chart(pulse_data["chart_data"]["scatter_plot"])
+                    if c_bytes:
+                        _add_section_header(story, "Bivariate Scatter Plot & Fitted Trend Line", styles)
+                        img = Image(io.BytesIO(c_bytes), width=14.5 * cm, height=7.5 * cm)
+                        story.append(img)
+                        story.append(Spacer(1, 0.4 * cm))
+                except Exception as exc:
+                    logger.warning(f"[PDFService] Scatter plot failed: {exc}")
+
+            # Analytical Interpretation & Limitations
+            if interp:
+                _add_section_header(story, "Analytical Interpretation & Academic Implications", styles)
+                story.append(Paragraph(interp, styles["body"]))
+                story.append(Spacer(1, 0.3 * cm))
+                story.append(Paragraph(
+                    "<b>Important Statistical Notice:</b> Correlation reflects observed mathematical association between variables and does not prove direct causality. Outside confounding variables (such as study hours, prior background, and course difficulty) may contribute to student academic outcomes.",
+                    styles["body"]
+                ))
+                story.append(Spacer(1, 0.4 * cm))
+
+            return
+
+        # ── 4. Standard Pulse Fallback for Other Analysis Types ───────────────
         if pulse_data.get("summary"):
             _add_section_header(story, "Executive Summary", styles)
             story.append(Paragraph(pulse_data["summary"], styles["body"]))
@@ -260,7 +461,7 @@ def _generate_fallback(story: list, records: list[dict], metrics: Optional[dict]
                 except Exception as exc:
                     logger.warning(f"[PDFService] Fallback chart {cname} failed: {exc}")
 
-        # Dynamic tables from Pulse
+        # Dynamic tables from Pulse (e.g. group summary, filter matches)
         if pulse_data.get("tables"):
             for tname, trows in pulse_data["tables"].items():
                 if trows:

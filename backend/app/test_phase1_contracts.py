@@ -276,3 +276,123 @@ def test_history_item_and_orchestration_request():
     hist_dump = hist.model_dump(mode="json", by_alias=True)
     assert hist_dump["planTitle"] == "Filter CGPA"
     assert hist_dump["resultSummary"] == "Found 5 students"
+
+
+def test_plan_step_status_values():
+    """Verify that PlanStep accepts only 'waiting', 'running', 'complete', 'failed'."""
+    for valid_status in ["waiting", "running", "complete", "failed"]:
+        step = PlanStep(
+            id="step-1",
+            step_number=1,
+            agent="db",
+            action="Query Database",
+            description="Executing SQL query",
+            status=valid_status,
+        )
+        assert step.status == valid_status
+
+    # Verify that status='error' is rejected by validation
+    with pytest.raises(ValidationError):
+        PlanStep(
+            id="step-2",
+            step_number=2,
+            agent="db",
+            action="Query Database",
+            description="Executing SQL query",
+            status="error",
+        )
+
+
+def test_deterministic_plan_step_failure_propagation():
+    """Verify that when an execution step fails, PlanStep status is updated to 'failed' (not 'error')."""
+    from app.mother.mother_agent import MotherAgent
+    from app.contracts import DynamicPlan, PlanStep
+    from app.mother.state import WorkflowState
+    from app.mother.types import AgentResult
+    from unittest.mock import MagicMock
+
+    mother = MotherAgent()
+    step1 = PlanStep(id="s1", step_number=1, agent="input", action="Parse", description="Parse query", status="waiting")
+    step2 = PlanStep(id="s2", step_number=2, agent="db", action="Query", description="Query db", status="waiting")
+    step3 = PlanStep(id="s3", step_number=3, agent="output", action="Format", description="Format output", status="waiting")
+
+    wf = WorkflowState(
+        workflow_id="wf-test-fail",
+        user_query="test failure query",
+        mode="modify",
+        confirmed=True,
+        plan=DynamicPlan(
+            task_id="wf-test-fail",
+            title="Test Fail Workflow",
+            intent="Test Fail",
+            request_type="write",
+            steps=[step1, step2, step3],
+        ),
+    )
+
+    # Mock input agent success, db agent failure
+    mock_input = MagicMock()
+    mock_input.execute.return_value = AgentResult(task_id="1", agent="input", status="completed", result={"raw_query": "test"})
+    mock_db = MagicMock()
+    mock_db.execute.return_value = AgentResult(task_id="2", agent="db", status="failed", error="Database connection error", result={})
+
+    mother.registry.register("input", mock_input)
+    mother.registry.register("db", mock_db)
+
+    res_wf = mother.execute_workflow(wf, use_crew=False)
+    assert res_wf.status == "failed"
+    assert res_wf.final_result is not None
+    assert res_wf.final_result.success is False
+    assert res_wf.final_result.error_type == "AGENT_EXECUTION_ERROR"
+
+    # Step 1 should be 'complete', Step 2 should be 'failed', Step 3 should remain 'waiting'
+    steps_dict = {s.agent: s.status for s in res_wf.plan.steps}
+    assert steps_dict["input"] == "complete"
+    assert steps_dict["db"] == "failed"
+    assert steps_dict["output"] == "waiting"
+
+
+def test_estimate_affected_rows_bulk_update_real_count():
+    """Verify that estimate_affected_rows for bulk_update queries the real database row count and does not return 0."""
+    from app.db.generic_mutations import estimate_affected_rows, bulk_update
+    from app.services.student_service import student_service
+
+    total_students = len(student_service.get_students())
+    assert total_students > 0
+
+    # 1. Table-wide bulk update (e.g. "reduce all student CGPA by 1") -> should match all students
+    est_all = estimate_affected_rows(
+        table="students",
+        action="bulk_update",
+        params={"field": "cgpa", "operation": "subtract", "value": 1.0, "filters": []}
+    )
+    assert est_all == total_students
+    assert est_all > 0
+
+    # 2. Filtered bulk update (e.g. Computer Science students) -> should match CS students only
+    cs_students = [s for s in student_service.get_students() if s.department == "Computer Science"]
+    est_cs = estimate_affected_rows(
+        table="students",
+        action="bulk_update",
+        params={
+            "field": "cgpa",
+            "operation": "subtract",
+            "value": 1.0,
+            "filters": [{"field": "department", "op": "eq", "value": "Computer Science"}]
+        }
+    )
+    assert est_cs == len(cs_students)
+    assert est_cs > 0
+
+    # 3. Execution of bulk update actually modifies rows and returns true affected count
+    res = bulk_update(
+        table="students",
+        filters=[{"field": "department", "op": "eq", "value": "Computer Science"}],
+        field="cgpa",
+        operation="subtract",
+        value=0.5,
+    )
+    assert res["success"] is True
+    assert res["rows_updated"] == len(cs_students)
+
+

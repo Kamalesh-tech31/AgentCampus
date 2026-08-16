@@ -92,6 +92,9 @@ def _build_final_result(workflow: WorkflowState) -> OrchestrationResult:
     req_confirm = bool(db_res.get("requires_confirmation")) if isinstance(db_res, dict) else False
     confirm_details = db_res if req_confirm else None
 
+    if affected_count is None and isinstance(db_res, dict):
+        affected_count = db_res.get("rows_updated") or db_res.get("count")
+
     exec_summary = {
         "agents": [
             {"agent": t.agent, "status": t.status}
@@ -102,6 +105,7 @@ def _build_final_result(workflow: WorkflowState) -> OrchestrationResult:
     return OrchestrationResult(
         summary=summary,
         query_executed=query_executed,
+        mutation_executed=query_executed if workflow.mode == "modify" else None,
         affected_count=affected_count,
         data=data,
         metrics=metrics,
@@ -112,6 +116,7 @@ def _build_final_result(workflow: WorkflowState) -> OrchestrationResult:
         requires_confirmation=req_confirm,
         confirmation_details=confirm_details,
         execution=exec_summary,
+        success=True,
     )
 
 
@@ -146,6 +151,45 @@ class CrewAdapter:
         if failed_tasks:
             workflow.status = "failed"
             failed_agent = failed_tasks[0].agent
+            if workflow.plan:
+                executed_success = {t.agent for t in workflow.task_history if t.status == "completed"}
+                executed_failed = {t.agent for t in workflow.task_history if t.status == "failed"}
+                updated_steps = []
+                for step in workflow.plan.steps:
+                    if step.agent in executed_success:
+                        updated_steps.append(
+                            PlanStep(
+                                id=step.id,
+                                step_number=step.step_number,
+                                agent=step.agent,
+                                action=step.action,
+                                description=step.description,
+                                status="complete",
+                                live_message=f"{step.agent} completed via CrewAI Flow",
+                            )
+                        )
+                    elif step.agent in executed_failed:
+                        updated_steps.append(
+                            PlanStep(
+                                id=step.id,
+                                step_number=step.step_number,
+                                agent=step.agent,
+                                action=step.action,
+                                description=step.description,
+                                status="failed",
+                                live_message=f"{step.agent} failed via CrewAI Flow",
+                            )
+                        )
+                    else:
+                        updated_steps.append(step)
+                workflow.plan = DynamicPlan(
+                    task_id=workflow.plan.task_id,
+                    title=workflow.plan.title,
+                    intent=workflow.plan.intent,
+                    request_type=workflow.plan.request_type,
+                    steps=updated_steps,
+                )
+
             is_rate_limit = any(
                 "rate limit" in str(getattr(e, "message", "")).lower() or "429" in str(getattr(e, "message", ""))
                 for e in workflow.events

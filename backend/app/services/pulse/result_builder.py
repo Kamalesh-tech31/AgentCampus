@@ -72,11 +72,31 @@ def _extract_findings(raw_results: list[dict], dataset_profile: dict) -> list[st
                 cnt = grp_data.get("count", "?")
                 findings.append(f"Group '{grp_name}' ({grp_by}): {cnt} records")
 
-        elif tool in ("find_at_risk_records",) and "at_risk_count" in result:
-            findings.append(
-                f"At-risk records identified: {result['at_risk_count']} out of "
-                f"{result.get('total_records', '?')}"
-            )
+        elif tool in ("evaluate_risk", "find_at_risk_records") and "at_risk_count" in result:
+            total = result.get("total_records", dataset_profile.get("record_count", 0))
+            at_risk = result.get("at_risk_count", 0)
+            pct = result.get("at_risk_percentage", round((at_risk / max(1, total)) * 100.0, 1))
+            findings.append(f"At-risk students identified: {at_risk} out of {total} ({pct}% of cohort)")
+            if result.get("dominant_risk_pattern"):
+                findings.append(f"Dominant Pattern: {result['dominant_risk_pattern']}")
+            if result.get("severity_distribution"):
+                sev = result["severity_distribution"]
+                crit_count = sev.get("Critical", 0)
+                high_count = sev.get("High", 0)
+                if crit_count > 0 or high_count > 0:
+                    findings.append(f"High Severity Breakdown: {crit_count} Critical, {high_count} High priority students")
+
+        elif tool == "calculate_correlation" and result.get("correlation") is not None:
+            f1 = result.get("field1_label", result.get("field1", "Field 1"))
+            f2 = result.get("field2_label", result.get("field2", "Field 2"))
+            r_val = result.get("correlation", 0.0)
+            r_sq = result.get("r_squared", round(r_val ** 2, 4))
+            strength = result.get("strength", "")
+            direction = result.get("direction", "")
+            findings.append(f"Correlation between {f1} and {f2}: r = {r_val} ({strength} {direction}, R² = {r_sq})")
+            if result.get("regression", {}).get("formula"):
+                findings.append(f"Fitted Model: {result['regression']['formula']}")
+            findings.append("Note: Statistical correlation indicates association, not causation.")
 
         elif tool == "count_records" and "count" in result:
             findings.append(f"Total records: {result['count']}")
@@ -86,6 +106,16 @@ def _extract_findings(raw_results: list[dict], dataset_profile: dict) -> list[st
             n = result.get("n", "?")
             label = "Top" if tool == "top_n_records" else "Bottom"
             findings.append(f"{label} {n} records by {field}: {len(result.get('top_records') or result.get('bottom_records', []))} returned")
+
+        elif tool == "calculate_weighted_ranking" and "ranking" in result:
+            top_n = result.get("top_n", 10)
+            formula = result.get("formula", "")
+            stats = result.get("statistics", {})
+            findings.append(f"Ranked top {top_n} students using {formula}")
+            if stats.get("highest_weighted_score") is not None:
+                findings.append(f"Highest weighted score: {stats['highest_weighted_score']:.2f}, Average: {stats.get('average_weighted_score', 0):.2f}")
+            if result.get("ties"):
+                findings.append(f"Ties detected: {len(result['ties'])} score collision(s) handled via deterministic tie-breaking.")
 
         elif tool == "detect_outliers" and "outlier_count" in result:
             findings.append(
@@ -110,7 +140,61 @@ def _build_tables(raw_results: list[dict]) -> dict:
         if "error" in result:
             continue
 
-        if tool == "group_analysis" and "groups" in result:
+        if tool in ("evaluate_risk", "find_at_risk_records") and "at_risk" in result:
+            # Build complete at-risk students table with explicit student-level reasons
+            raw_at_risk = result["at_risk"]
+            formatted_risk = []
+            for i, r in enumerate(raw_at_risk):
+                formatted_risk.append({
+                    "risk_rank": r.get("risk_rank", i + 1),
+                    "rollNumber": r.get("rollNumber", ""),
+                    "name": r.get("name", ""),
+                    "department": r.get("department", ""),
+                    "cgpa": r.get("cgpa"),
+                    "attendance": r.get("attendance"),
+                    "status": r.get("status", ""),
+                    "backlogs": r.get("backlogs", 0),
+                    "risk_score": r.get("risk_score", 0.0),
+                    "risk_severity": r.get("risk_severity", "Moderate"),
+                    "risk_reasons_str": r.get("risk_reasons_str", "Low academic indicators"),
+                })
+            tables["at_risk_students"] = formatted_risk
+
+            # Add department risk summary table if available
+            if result.get("department_analysis"):
+                tables["department_risk"] = result["department_analysis"]
+
+            # Add severity summary table if available
+            if result.get("severity_distribution"):
+                sev_rows = [
+                    {"severity": k, "count": v, "percentage": f"{round((v / max(1, result.get('total_records', 100))) * 100, 1)}%"}
+                    for k, v in result["severity_distribution"].items()
+                ]
+                tables["severity_summary"] = sev_rows
+
+        elif tool == "calculate_weighted_ranking" and "ranking" in result:
+            # Build clean top performers table with contribution columns
+            top_recs = result["ranking"]
+            formatted_top = []
+            for r in top_recs:
+                row = {
+                    "rank": r.get("rank"),
+                    "name": r.get("name"),
+                    "rollNumber": r.get("rollNumber"),
+                    "department": r.get("department"),
+                    "cgpa": r.get("cgpa"),
+                    "attendance": r.get("attendance"),
+                    "academic_score": r.get("academic_score"),
+                    "academic_contribution": r.get("academic_contribution"),
+                    "attendance_contribution": r.get("attendance_contribution"),
+                    "weighted_score": r.get("_weighted_score"),
+                }
+                if r.get("is_tied"):
+                    row["is_tied"] = True
+                formatted_top.append(row)
+            tables["top_performers"] = formatted_top
+
+        elif tool == "group_analysis" and "groups" in result:
             grp_by = result.get("group_by", "group")
             rows = []
             for grp_name, grp_data in result["groups"].items():
@@ -124,9 +208,6 @@ def _build_tables(raw_results: list[dict]) -> dict:
                         row[f"{field}_max"] = stats.get("max")
                 rows.append(row)
             tables["group_summary"] = rows
-
-        elif tool == "find_at_risk_records" and "at_risk" in result:
-            tables["at_risk_students"] = result["at_risk"]
 
         elif tool == "top_n_records" and "top_records" in result:
             tables["top_performers"] = result["top_records"]
@@ -147,12 +228,6 @@ def _build_chart_data(raw_results: list[dict], dataset_profile: dict) -> dict:
     """
     Extract chart-ready data from tool results.
     Scribe decides how to render this.
-
-    Chart types:
-      - bar: group labels + values
-      - scatter: x/y pairs
-      - histogram: bin labels + counts
-      - pie: category + count
     """
     chart_data: dict[str, dict] = {}
 
@@ -163,9 +238,76 @@ def _build_chart_data(raw_results: list[dict], dataset_profile: dict) -> dict:
         if "error" in result:
             continue
 
-        if tool in ("group_analysis", "compare_groups") and "groups" in result:
+        if tool in ("evaluate_risk", "find_at_risk_records") and "at_risk_count" in result:
+            # 1. Severity pie/donut chart
+            sev_dist = result.get("severity_distribution", {})
+            if sev_dist:
+                chart_data["risk_severity_pie"] = {
+                    "type": "pie",
+                    "title": "Cohort Risk Severity Breakdown",
+                    "labels": list(sev_dist.keys()),
+                    "values": list(sev_dist.values()),
+                }
+            else:
+                total = result.get("total_records", 1)
+                at_risk = result.get("at_risk_count", 0)
+                chart_data["risk_pie"] = {
+                    "type": "pie",
+                    "title": "At-Risk vs Safe Students",
+                    "labels": ["At Risk", "Safe"],
+                    "values": [at_risk, total - at_risk],
+                }
+
+            # 2. Risk factor frequency horizontal bar chart
+            factor_freqs = result.get("factor_frequencies", {})
+            if factor_freqs:
+                chart_data["risk_factors_bar"] = {
+                    "type": "bar",
+                    "title": "Risk Factor Prevalence Across Cohort",
+                    "x_label": "Risk Indicator",
+                    "y_label": "Number of Students",
+                    "labels": list(factor_freqs.keys()),
+                    "values": list(factor_freqs.values()),
+                }
+
+            # 3. Department risk comparison bar chart
+            dept_analysis = result.get("department_analysis", [])
+            if dept_analysis:
+                chart_data["department_risk_bar"] = {
+                    "type": "bar",
+                    "title": "At-Risk Students by Department",
+                    "x_label": "Department",
+                    "y_label": "At-Risk Count",
+                    "labels": [d["department"] for d in dept_analysis],
+                    "values": [d["at_risk_count"] for d in dept_analysis],
+                }
+
+        elif tool == "calculate_correlation" and result.get("correlation") is not None:
+            chart_data["scatter_plot"] = {
+                "type": "scatter",
+                "title": f"{result.get('field2_label', result.get('field2'))} vs {result.get('field1_label', result.get('field1'))} Correlation",
+                "x_label": result.get("field1_label", result.get("field1")),
+                "y_label": result.get("field2_label", result.get("field2")),
+                "correlation": result.get("correlation"),
+                "r_squared": result.get("r_squared"),
+                "regression": result.get("regression", {}),
+                "points": result.get("scatter_points", []),
+            }
+
+        elif tool == "calculate_weighted_ranking" and "ranking" in result:
+            top_recs = result["ranking"]
+            chart_data["ranking_bar"] = {
+                "type": "bar",
+                "title": f"Top {len(top_recs)} Students by Weighted Score",
+                "x_label": "Student",
+                "y_label": "Weighted Score",
+                "labels": [f"{r.get('name', r.get('rollNumber'))}" for r in top_recs],
+                "values": [r.get("_weighted_score", 0.0) for r in top_recs],
+                "ranks": [r.get("rank") for r in top_recs],
+            }
+
+        elif tool in ("group_analysis", "compare_groups") and "groups" in result:
             grp_by = result.get("group_by", "group")
-            # Find first numeric field with average data
             labels = list(result["groups"].keys())
             for grp_name, grp_data in result["groups"].items():
                 for field, stats in grp_data.items():
@@ -196,26 +338,6 @@ def _build_chart_data(raw_results: list[dict], dataset_profile: dict) -> dict:
                 "values": list(dist.values()),
             }
 
-        elif tool == "calculate_correlation" and result.get("correlation") is not None:
-            chart_data["correlation_info"] = {
-                "type": "scatter_meta",
-                "field1": result.get("field1"),
-                "field2": result.get("field2"),
-                "correlation": result.get("correlation"),
-                "direction": result.get("direction"),
-                "strength": result.get("strength"),
-            }
-
-        elif tool == "find_at_risk_records" and "at_risk_count" in result:
-            total = result.get("total_records", 1)
-            at_risk = result.get("at_risk_count", 0)
-            chart_data["risk_pie"] = {
-                "type": "pie",
-                "title": "At-Risk vs Safe Students",
-                "labels": ["At Risk", "Safe"],
-                "values": [at_risk, total - at_risk],
-            }
-
     return chart_data
 
 
@@ -224,12 +346,14 @@ def _infer_analysis_type(plan: dict) -> str:
     goal = plan.get("analysis_goal", "general_analysis").lower()
     tools_used = [op.get("tool", "") for op in plan.get("operations", [])]
 
+    if "evaluate_risk" in tools_used or "find_at_risk_records" in tools_used or "risk" in goal:
+        return "risk_analysis"
+    if "calculate_correlation" in tools_used or "correlation" in goal or "relationship" in goal:
+        return "correlation_analysis"
+    if "calculate_weighted_ranking" in tools_used or "weighted" in goal:
+        return "weighted_ranking"
     if "compare" in goal or "compare_groups" in tools_used:
         return "group_comparison"
-    if "risk" in goal or "find_at_risk_records" in tools_used:
-        return "risk_analysis"
-    if "correlation" in goal or "calculate_correlation" in tools_used:
-        return "correlation_analysis"
     if "trend" in goal:
         return "trend_analysis"
     if "rank" in goal or "top_n_records" in tools_used or "bottom_n_records" in tools_used:
@@ -251,17 +375,6 @@ def build_pulse_result(
 ) -> dict:
     """
     Build the complete Pulse output contract.
-
-    Args:
-        records:          Original input records
-        dataset_profile:  Profile from dataset_profiler
-        plan:             Validated execution plan
-        raw_results:      List of {tool, parameters, result} dicts
-        insight:          Human-readable insight string (LLM or deterministic)
-        legacy_metrics:   OrchestrationMetrics model instance (for backward compat)
-
-    Returns:
-        Complete Pulse result dict ready for Scribe consumption.
     """
     findings = _extract_findings(raw_results, dataset_profile)
     tables = _build_tables(raw_results)
@@ -275,7 +388,57 @@ def build_pulse_result(
         summary_parts.append(findings[0])
     summary = " ".join(summary_parts)
 
-    return {
+    # Extract metadata payloads if available
+    extra_meta = {}
+    for entry in raw_results:
+        tool_name = entry.get("tool")
+        res_dict = entry.get("result", {})
+        if not isinstance(res_dict, dict):
+            continue
+
+        if tool_name == "calculate_weighted_ranking":
+            extra_meta.update({
+                "formula": res_dict.get("formula"),
+                "weights": res_dict.get("weights"),
+                "top_n": res_dict.get("top_n"),
+                "ties": res_dict.get("ties", []),
+                "has_cutoff_tie": res_dict.get("has_cutoff_tie", False),
+                "cutoff_tie_details": res_dict.get("cutoff_tie_details"),
+                "tie_breaking_rule": res_dict.get("tie_breaking_rule"),
+                "statistics": res_dict.get("statistics", {}),
+                "ranking": res_dict.get("ranking", []),
+            })
+
+        elif tool_name in ("evaluate_risk", "find_at_risk_records"):
+            extra_meta.update({
+                "at_risk": res_dict.get("at_risk", []),  # All matching records preserved
+                "at_risk_count": res_dict.get("at_risk_count"),
+                "safe_count": res_dict.get("safe_count"),
+                "at_risk_percentage": res_dict.get("at_risk_percentage"),
+                "severity_distribution": res_dict.get("severity_distribution", {}),
+                "factor_frequencies": res_dict.get("factor_frequencies", {}),
+                "department_analysis": res_dict.get("department_analysis", []),
+                "dominant_risk_pattern": res_dict.get("dominant_risk_pattern"),
+                "data_driven_recommendations": res_dict.get("data_driven_recommendations", []),
+                "thresholds_used": res_dict.get("thresholds_used", {}),
+            })
+
+        elif tool_name == "calculate_correlation":
+            extra_meta.update({
+                "field1": res_dict.get("field1"),
+                "field2": res_dict.get("field2"),
+                "field1_label": res_dict.get("field1_label"),
+                "field2_label": res_dict.get("field2_label"),
+                "correlation": res_dict.get("correlation"),
+                "r_squared": res_dict.get("r_squared"),
+                "strength": res_dict.get("strength"),
+                "direction": res_dict.get("direction"),
+                "regression": res_dict.get("regression", {}),
+                "interpretation": res_dict.get("interpretation"),
+                "scatter_points": res_dict.get("scatter_points", []),
+            })
+
+    result_contract = {
         # ── Core contract ──────────────────────────────────────────────────────
         "summary": summary,
         "analysis_type": analysis_type,
@@ -302,3 +465,8 @@ def build_pulse_result(
         "analysis_plan": plan,
         "raw_results": raw_results,
     }
+
+    if extra_meta:
+        result_contract.update(extra_meta)
+
+    return result_contract
