@@ -140,6 +140,12 @@ export interface OrchestrationResult {
   rawPlan?: DynamicPlan;
   structuredIntent?: any;
   csvData?: string;
+  sql?: string;
+  requestedLimit?: number;
+  rowsReturned?: number;
+  operation?: string;
+  table?: string;
+  sqlMetadata?: any;
   success?: boolean;
   errorType?: string;
   retryAfter?: string;

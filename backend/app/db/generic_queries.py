@@ -74,6 +74,9 @@ def generic_filter(
             s_dir = str(sort.get("direction") or sort.get("order") or "desc").lower()
             if s_field in known_fields:
                 query = query.order(s_field, desc=(s_dir == "desc"))
+                sec_col = "roll_number" if "roll_number" in known_fields else ("id" if "id" in known_fields else None)
+                if sec_col and s_field != sec_col:
+                    query = query.order(sec_col, desc=False)
         elif isinstance(sort, str):
             parts = sort.strip().split()
             if len(parts) == 1:
@@ -86,13 +89,111 @@ def generic_filter(
                 s_dir = parts[1].lower()
                 if s_field in known_fields:
                     query = query.order(s_field, desc=(s_dir == "desc"))
+                    sec_col = "roll_number" if "roll_number" in known_fields else ("id" if "id" in known_fields else None)
+                    if sec_col and s_field != sec_col:
+                        query = query.order(sec_col, desc=False)
 
     if limit is not None:
-        query = query.limit(limit)
+        query = query.limit(int(limit))
 
-    response = query.execute()
-    data = response.data or []
-    total = response.count if response.count is not None else len(data)
+    data = []
+    total = 0
+    try:
+        response = query.execute()
+        data = response.data or []
+        total = response.count if response.count is not None else len(data)
+        if limit is not None and len(data) > int(limit):
+            data = data[:int(limit)]
+    except Exception as exc:
+        logger.warning(f"[GenericFilter] Supabase query failed: {exc}")
+
+    if not data and table.lower() == "students":
+        from app.services.student_service import student_service
+        from app.agents.input_agent import DEPARTMENT_ALIASES
+        all_students = student_service.get_students()
+        filtered = []
+        for s in all_students:
+            s_dict = s.model_dump(by_alias=True)
+            match = True
+            for f in filters:
+                f_field = f.get("field")
+                f_op = f.get("op", "eq")
+                f_val = f.get("value")
+                actual = s_dict.get(f_field, getattr(s, f_field, None))
+                if actual is None:
+                    match = False
+                    break
+                if f_field == "department":
+                    canon_actual = DEPARTMENT_ALIASES.get(str(actual).lower(), str(actual).lower())
+                    canon_val = DEPARTMENT_ALIASES.get(str(f_val).lower(), str(f_val).lower())
+                    if f_op in ("eq", "==") and canon_actual != canon_val:
+                        match = False
+                        break
+                elif f_op in ("eq", "=="):
+                    if str(actual).lower() != str(f_val).lower():
+                        match = False
+                        break
+                else:
+                    try:
+                        act_num = float(actual)
+                        val_num = float(f_val)
+                        if f_op == "gt" and not (act_num > val_num):
+                            match = False
+                            break
+                        elif f_op == "gte" and not (act_num >= val_num):
+                            match = False
+                            break
+                        elif f_op == "lt" and not (act_num < val_num):
+                            match = False
+                            break
+                        elif f_op == "lte" and not (act_num <= val_num):
+                            match = False
+                            break
+                        elif f_op in ("neq", "!=") and not (act_num != val_num):
+                            match = False
+                            break
+                    except (ValueError, TypeError):
+                        match = False
+                        break
+            if match:
+                filtered.append(s)
+
+        if sort:
+            s_field = "cgpa"
+            s_desc = True
+            if isinstance(sort, dict):
+                s_field = sort.get("field", "cgpa")
+                s_desc = str(sort.get("direction") or sort.get("order") or "desc").lower() == "desc"
+            elif isinstance(sort, str):
+                parts = sort.strip().split()
+                if len(parts) >= 2:
+                    s_field = parts[0]
+                    s_desc = parts[1].lower() == "desc"
+                elif parts and parts[0].lower() in ("asc", "desc"):
+                    s_desc = parts[0].lower() == "desc"
+                elif parts:
+                    s_field = parts[0]
+            try:
+                filtered.sort(
+                    key=lambda s: (
+                        -(getattr(s, s_field, 0.0) or 0.0) if s_desc else (getattr(s, s_field, 0.0) or 0.0),
+                        getattr(s, "roll_number", getattr(s, "rollNumber", getattr(s, "id", ""))) or "",
+                    )
+                )
+            except Exception:
+                try:
+                    filtered.sort(key=lambda s: getattr(s, s_field, 0.0) or 0.0, reverse=s_desc)
+                except Exception:
+                    pass
+
+        total = len(filtered)
+        if limit is not None:
+            try:
+                filtered = filtered[:int(limit)]
+            except Exception:
+                filtered = filtered[:limit]
+        data = [s.model_dump(by_alias=True) for s in filtered]
+
     truncated = (total > len(data))
 
     return data, truncated, total
@@ -119,10 +220,12 @@ def generic_get_all(
     try:
         query = supabase.table(table).select(select_clause, count="exact")
         if limit is not None:
-            query = query.limit(limit)
+            query = query.limit(int(limit))
         response = query.execute()
         data = response.data or []
         total = response.count if response.count is not None else len(data)
+        if limit is not None and len(data) > int(limit):
+            data = data[:int(limit)]
     except Exception as exc:
         logger.warning(f"[GenericGetAll] Supabase query failed: {exc}")
 
@@ -131,7 +234,10 @@ def generic_get_all(
         students = student_service.get_students()
         total = len(students)
         if limit is not None:
-            students = students[:limit]
+            try:
+                students = students[:int(limit)]
+            except Exception:
+                students = students[:limit]
         data = [s.model_dump(by_alias=True) for s in students]
 
     truncated = (total > len(data))

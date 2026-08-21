@@ -697,17 +697,21 @@ def _generate_fallback_ppt(
     if records:
         slide_count += _add_multi_data_table_slides(prs, records, "Student Data")
 
-        at_risk = [
-            r for r in records
-            if (r.get("status") == "Probation" or float(r.get("cgpa", 10.0)) < 6.5)
-        ]
-        if at_risk:
-            _add_at_risk_slide(prs, at_risk)
-            slide_count += 1
+        user_q_lower = (user_query or "").lower()
+        wants_risk = any(k in user_q_lower for k in ("risk", "at-risk", "at risk", "probation", "failing", "intervention"))
+        if wants_risk:
+            at_risk = [
+                r for r in records
+                if (r.get("status") == "Probation" or float(r.get("cgpa", 10.0)) < 6.5)
+            ]
+            if at_risk:
+                _add_at_risk_slide(prs, at_risk)
+                slide_count += 1
 
-    recommendations = _generate_recommendations(records, metrics)
-    _add_recommendations_slide(prs, recommendations)
-    slide_count += 1
+        if metrics or wants_risk:
+            recommendations = _generate_recommendations(records, metrics)
+            _add_recommendations_slide(prs, recommendations)
+            slide_count += 1
 
     return slide_count
 

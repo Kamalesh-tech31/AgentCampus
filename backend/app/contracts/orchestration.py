@@ -56,6 +56,13 @@ class OrchestrationResult(CamelModel):
     # Scribe output metadata — additive, backward-compatible
     output_format: Optional[str] = None   # "text" | "excel" | "pdf" | "pptx"
     output_file: Optional[str] = None     # absolute file path when format is file-based
+    # SQL Inspection & Execution Metadata
+    sql: Optional[str] = None
+    requested_limit: Optional[int] = None
+    rows_returned: Optional[int] = None
+    operation: Optional[str] = None
+    table: Optional[str] = None
+    sql_metadata: Optional[Dict[str, Any]] = None
     # 3-Mode & confirmation extensions
     mode: Optional[str] = None            # "modify" | "explore" | "analyze"
     requires_confirmation: Optional[bool] = False

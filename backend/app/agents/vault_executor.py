@@ -149,11 +149,49 @@ def execute_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
                 sort_field, is_desc = sort_info
                 if sort_field in known_fields:
                     query = query.order(sort_field, desc=is_desc)
+                    sec_col = "roll_number" if "roll_number" in known_fields else ("id" if "id" in known_fields else None)
+                    if sec_col and sort_field != sec_col:
+                        query = query.order(sec_col, desc=False)
+
             if limit is not None:
-                query = query.limit(limit)
-            res = query.execute()
-            records = res.data or []
-            total = res.count if res.count is not None else len(records)
+                query = query.limit(int(limit))
+
+            records = []
+            total = 0
+            try:
+                res = query.execute()
+                records = res.data or []
+                total = res.count if res.count is not None else len(records)
+                if limit is not None and len(records) > int(limit):
+                    records = records[:int(limit)]
+            except Exception as exc:
+                logger.warning(f"[VaultExecutor] Supabase query failed: {exc}")
+
+            if not records and table.lower() == "students":
+                from app.services.student_service import student_service
+                students = list(student_service.get_students())
+                if sort_info:
+                    s_field, is_desc = sort_info
+                    try:
+                        students.sort(
+                            key=lambda s: (
+                                -(getattr(s, s_field, 0.0) or 0.0) if is_desc else (getattr(s, s_field, 0.0) or 0.0),
+                                getattr(s, "roll_number", getattr(s, "rollNumber", getattr(s, "id", ""))) or "",
+                            )
+                        )
+                    except Exception:
+                        try:
+                            students.sort(key=lambda s: getattr(s, s_field, 0.0) or 0.0, reverse=is_desc)
+                        except Exception:
+                            pass
+                total = len(students)
+                if limit is not None:
+                    try:
+                        students = students[:int(limit)]
+                    except Exception:
+                        students = students[:limit]
+                records = [s.model_dump(by_alias=True) for s in students]
+
             truncated = (total > len(records))
             msg = f"Fetched {len(records)} rows from {table}." if not truncated else f"Fetched {len(records)} rows from {table} (total: {total}, truncated: true)."
             return {"success": True, "data": records, "truncated": truncated, "total": total, "message": msg}
@@ -203,13 +241,98 @@ def execute_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
                 sort_field, is_desc = sort_info
                 if sort_field in known_fields:
                     query = query.order(sort_field, desc=is_desc)
+                    sec_col = "roll_number" if "roll_number" in known_fields else ("id" if "id" in known_fields else None)
+                    if sec_col and sort_field != sec_col:
+                        query = query.order(sec_col, desc=False)
 
             if limit is not None:
-                query = query.limit(limit)
+                query = query.limit(int(limit))
 
-            res = query.execute()
-            records = res.data or []
-            total = res.count if res.count is not None else len(records)
+            records = []
+            total = 0
+            try:
+                res = query.execute()
+                records = res.data or []
+                total = res.count if res.count is not None else len(records)
+                if limit is not None and len(records) > int(limit):
+                    records = records[:int(limit)]
+            except Exception as exc:
+                logger.warning(f"[VaultExecutor] Supabase query failed: {exc}")
+
+            if not records and table.lower() == "students":
+                from app.services.student_service import student_service
+                from app.agents.input_agent import DEPARTMENT_ALIASES
+                all_students = student_service.get_students()
+                filtered = []
+                for s in all_students:
+                    s_dict = s.model_dump(by_alias=True)
+                    match = True
+                    for f in filters:
+                        f_field = f.get("field")
+                        f_op = f.get("op", "eq")
+                        f_val = f.get("value")
+                        actual = s_dict.get(f_field, getattr(s, f_field, None))
+                        if actual is None:
+                            match = False
+                            break
+                        if f_field == "department":
+                            canon_actual = DEPARTMENT_ALIASES.get(str(actual).lower(), str(actual).lower())
+                            canon_val = DEPARTMENT_ALIASES.get(str(f_val).lower(), str(f_val).lower())
+                            if f_op in ("eq", "==") and canon_actual != canon_val:
+                                match = False
+                                break
+                        elif f_op in ("eq", "=="):
+                            if str(actual).lower() != str(f_val).lower():
+                                match = False
+                                break
+                        else:
+                            try:
+                                act_num = float(actual)
+                                val_num = float(f_val)
+                                if f_op == "gt" and not (act_num > val_num):
+                                    match = False
+                                    break
+                                elif f_op == "gte" and not (act_num >= val_num):
+                                    match = False
+                                    break
+                                elif f_op == "lt" and not (act_num < val_num):
+                                    match = False
+                                    break
+                                elif f_op == "lte" and not (act_num <= val_num):
+                                    match = False
+                                    break
+                                elif f_op in ("neq", "!=") and not (act_num != val_num):
+                                    match = False
+                                    break
+                            except (ValueError, TypeError):
+                                match = False
+                                break
+                    if match:
+                        filtered.append(s)
+
+                if sort_info:
+                    s_field, is_desc = sort_info
+                    try:
+                        filtered.sort(
+                            key=lambda s: (
+                                -(getattr(s, s_field, 0.0) or 0.0) if is_desc else (getattr(s, s_field, 0.0) or 0.0),
+                                getattr(s, "roll_number", getattr(s, "rollNumber", getattr(s, "id", ""))) or "",
+                            )
+                        )
+                    except Exception:
+                        try:
+                            filtered.sort(key=lambda s: getattr(s, s_field, 0.0) or 0.0, reverse=is_desc)
+                        except Exception:
+                            pass
+
+                total = len(filtered)
+                if limit is not None:
+                    try:
+                        filtered = filtered[:int(limit)]
+                    except Exception:
+                        filtered = filtered[:limit]
+                records = [s.model_dump(by_alias=True) for s in filtered]
+
             truncated = (total > len(records))
             msg = f"Filtered {len(records)} rows from {table}." if not truncated else f"Filtered {len(records)} rows from {table} (total: {total}, truncated: true)."
             return {"success": True, "data": records, "truncated": truncated, "total": total, "message": msg}

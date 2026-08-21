@@ -218,7 +218,7 @@ export const CenterPanel: React.FC<CenterPanelProps> = ({
         <div className="flex-1 overflow-y-auto p-4 space-y-6 custom-scrollbar">
           {turns.map((turn, turnIdx) => {
             const isSelected = selectedTurnId === turn.id;
-            const turnAgents = Object.values(turn.agents).filter((a) => {
+            const turnAgents = (Object.values(turn.agents) as AgentState[]).filter((a: AgentState) => {
               if (a.id === 'analytics') {
                 return turn.mode === 'analyze' || a.status !== 'waiting';
               }

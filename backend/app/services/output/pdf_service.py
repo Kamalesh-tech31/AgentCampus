@@ -225,7 +225,7 @@ def _add_section_header(story: list, title: str, styles: dict, color=MID_BLUE):
     story.append(Spacer(1, 0.3 * cm))
 
 
-def _generate_fallback(story: list, records: list[dict], metrics: Optional[dict], insight: Optional[str], styles: dict, pulse_data: Optional[dict] = None):
+def _generate_fallback(story: list, records: list[dict], metrics: Optional[dict], insight: Optional[str], styles: dict, user_query: str = "", pulse_data: Optional[dict] = None):
     """Deterministic fallback logic for PDF generation."""
     if pulse_data:
         # ── 1. Specialized Analytical PDF for Weighted Ranking ────────────────
@@ -585,8 +585,10 @@ def _generate_fallback(story: list, records: list[dict], metrics: Optional[dict]
         story.append(_records_table(records, styles))
         story.append(Spacer(1, 0.5 * cm))
 
-    # ── At-Risk Students ─────────────────────────────────────────────────────
-    if records:
+    # ── At-Risk Students (strictly request-scoped) ───────────────────────────
+    user_q_lower = (user_query or "").lower()
+    wants_risk = any(k in user_q_lower for k in ("risk", "at-risk", "at risk", "probation", "failing", "intervention"))
+    if records and wants_risk:
         at_risk = [
             r for r in records
             if (r.get("status") == "Probation" or float(r.get("cgpa", 10.0)) < 6.5)
@@ -793,7 +795,7 @@ def generate_pdf(
 
     if not plan:
         logger.info("[PDFService] Using deterministic fallback generation.")
-        _generate_fallback(story, records, metrics, insight, styles, pulse_data=pulse_data)
+        _generate_fallback(story, records, metrics, insight, styles, user_query=user_query, pulse_data=pulse_data)
 
     # ── Footer note ───────────────────────────────────────────────────────────
     story.append(Spacer(1, 1.0 * cm))

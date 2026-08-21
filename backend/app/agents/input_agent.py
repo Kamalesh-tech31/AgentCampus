@@ -424,6 +424,10 @@ def extract_limit(query_lower: str) -> Optional[int]:
                     return None
                 return nw
 
+    # Pattern 5: Singular phrases for a single top/best/lowest student -> limit = 1
+    if re.search(r"\b(?:the\s+)?(?:top|best|highest|lowest|worst|first)\s+student\b", query_lower) or re.search(r"\btopper\b", query_lower):
+        return 1
+
     return None
 
 
@@ -528,6 +532,14 @@ def extract_sort(query_lower: str) -> Optional[dict]:
         if field and field in SORTABLE_FIELDS:
             return {"field": field, "direction": dir_map.get(m.group(1), "desc")}
 
+    # 5b. "based on [the] <field>" / "ranked by [the] <field>" / "according to <field>"
+    m = re.search(r"\b(?:based\s+on(?:\s+the)?|ranked\s+by(?:\s+the)?|according\s+to(?:\s+the)?|sorted\s+by(?:\s+the)?)\s+" + _SORT_FIELD_PAT + r"\s*(ascending|descending|asc|desc)?\b", query_lower)
+    if m:
+        field = _resolve_field(m.group(1))
+        if field and field in SORTABLE_FIELDS:
+            raw_dir = m.group(2) or "desc"
+            return {"field": field, "direction": dir_map.get(raw_dir, "desc")}
+
     # 6. "top N students by <field>"
     m = re.search(r"\btop\s+(?:\d+\s+)?students?\s+by\s+" + _SORT_FIELD_PAT + r"\b", query_lower)
     if m:
@@ -551,13 +563,13 @@ def extract_fields(query_lower: str) -> list[str]:
     """
     Extracts requested output fields from phrases like:
       'show only name and cgpa'
-      'give me student name, department and cgpa'
+      'display only student name, department and cgpa'
     Returns [] if no explicit field selection or all fields implied.
     Only returns fields present in KNOWN_FIELDS.
     """
     m = re.search(
-        r"\b(?:show\s+only|show\s+just|display\s+only|give\s+me|show\s+me)\s+"
-        r"([a-z_\s,]+?)(?:\s+for|\s+of|\s+from|\s+where|\s+with|$)",
+        r"\b(?:show\s+only|show\s+just|display\s+only|display\s+just|select\s+only|select\s+just|give\s+me\s+only|columns?|fields?)\s+"
+        r"([a-z_\s,]+?)(?:\s+for|\s+of|\s+from|\s+where|\s+with|\s+based\s+on|$)",
         query_lower,
     )
     if not m:
@@ -820,6 +832,9 @@ def build_params(
     filters: list[dict],
     sort: Optional[dict],
     limit: Optional[int],
+    department: Optional[str] = None,
+    status_filter: Optional[str] = None,
+    fields: Optional[list[str]] = None,
 ) -> dict:
     """
     Builds Vault-compliant params payload for structured_intent.
@@ -861,11 +876,22 @@ def build_params(
             params["row_id"] = row_id
 
     elif action in ("filter_rows", "get_all_rows"):
-        params["filters"] = filters
+        all_flts = []
+        if department:
+            all_flts.append({"field": "department", "op": "eq", "value": department})
+        if status_filter:
+            all_flts.append({"field": "status", "op": "eq", "value": status_filter})
+        for f in filters:
+            if "validation_error" not in f:
+                all_flts.append(f)
+        if all_flts:
+            params["filters"] = all_flts
         if sort:
             params["sort"] = sort
         if limit:
             params["limit"] = limit
+        if fields:
+            params["fields"] = fields
 
     return params
 
@@ -931,20 +957,30 @@ def detect_operation(query_lower: str) -> str:
     Mirrors MotherAgent classification for local structuring only.
     Does NOT replace MotherAgent's classification or Groq.
     """
-    analytics_kw = [
-        "average", "avg", "highest", "lowest", "metrics", "percentile",
-        "analytics", "distribution", "statistic", "breakdown",
-        "calculate", "compute", "how many", "count", "at risk", "at-risk", "risk", "probation", "performance",
-    ]
-    if any(kw in query_lower for kw in analytics_kw):
-        return "analytics"
-
     write_kw = [
         "update", "delete", "insert", "add", "create", "modify", "set ", "change",
         "remove", "drop", "borrow", "loan", "record", "register", "save",
     ]
     if any(kw in query_lower for kw in write_kw):
         return "write"
+
+    # Ranking/top-N queries are read queries, not statistical analytics
+    is_ranking = any(
+        rk in query_lower for rk in ("top ", "top-", "highest ", "lowest ", "best ")
+    ) and any(
+        ent in query_lower for ent in ("student", "students", "record", "records", "cse", "cs", "ece", "mech", "civil")
+    ) and not any(
+        stat in query_lower for stat in ("average", "avg", "mean", "calculate", "compute", "count", "how many", "distribution")
+    )
+
+    if not is_ranking:
+        analytics_kw = [
+            "average", "avg", "highest", "lowest", "metrics", "percentile",
+            "analytics", "distribution", "statistic", "breakdown",
+            "calculate", "compute", "how many", "count", "at risk", "at-risk", "risk", "probation",
+        ]
+        if any(kw in query_lower for kw in analytics_kw):
+            return "analytics"
 
     return "read"
 
@@ -1156,7 +1192,7 @@ class InputAgent(BaseAgent):
         row_id = extract_row_id(query, query_lower, all_filters)
         data = extract_data(query, query_lower, parsed_records, table=table)
         action = derive_action(operation, query_lower, all_filters, row_id, data, parsed_records)
-        params = build_params(action, query, table, row_id, data, all_filters, sort, limit)
+        params = build_params(action, query, table, row_id, data, all_filters, sort, limit, department=department, status_filter=status_filter, fields=fields)
 
         structured_intent: dict = {
             # ── Vault Input Contract Keys ──

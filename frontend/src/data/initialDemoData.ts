@@ -102,6 +102,7 @@ const COMPLETED_OUTPUT_AGENT: AgentState = {
 export const INITIAL_DEMO_THREAD: ChatThread = {
   id: 'chat-demo-1',
   title: 'Top 10 CS Students Query',
+  mode: 'explore',
   createdAt: '10:00 AM',
   updatedAt: '10:00 AM',
   turns: [
@@ -109,6 +110,7 @@ export const INITIAL_DEMO_THREAD: ChatThread = {
       id: 'turn-demo-1',
       timestamp: '10:00 AM',
       prompt: 'Show top 10 Computer Science students ordered by CGPA with high attendance',
+      mode: 'explore',
       status: 'complete',
       durationMs: 2880,
       agents: {

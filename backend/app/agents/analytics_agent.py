@@ -138,8 +138,8 @@ def _build_deterministic_plan(
             "reasoning": "Deterministic plan: user requested bivariate correlation analysis.",
         }
 
-    # 3. Weighted Ranking Intent
-    if any(k in q for k in ("rank", "weighted", "top 10", "top 5", "top performers", "80%", "70%")):
+    # 3. Weighted Multi-Criteria Ranking Intent
+    if any(k in q for k in ("weighted", "composite", "criteria rank", "multi-criteria", "80%", "70%")) or ("rank" in q and "attendance" in q and "cgpa" in q):
         top_n = 10
         import re
         top_match = re.search(r"top\s+(\d+)", q)
@@ -185,7 +185,9 @@ def _build_deterministic_plan(
             "parameters": {"group_by": primary_cat, "metrics": ["average", "min", "max", "count"]},
         })
 
-    ops.append({"tool": "evaluate_risk", "parameters": {}})
+    # Only include risk evaluation if risk is explicitly asked for
+    if any(k in q for k in ("risk", "at-risk", "probation", "probationary", "intervention", "low-performing", "failing")):
+        ops.append({"tool": "evaluate_risk", "parameters": {}})
 
     return {
         "analysis_goal": "general_summary",

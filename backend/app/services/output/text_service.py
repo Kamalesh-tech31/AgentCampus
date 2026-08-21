@@ -277,12 +277,20 @@ def _generate_fallback_text(
         sections.append("=" * 65)
         return "\n".join(sections)
 
-    # ── 4. Standard Analytics Reports ─────────────────────────────────────────
-    title = "STUDENT ANALYSIS REPORT"
+    # ── 4. Standard Reports ───────────────────────────────────────────────────
+    user_q_lower = (user_query or "").lower()
+    wants_risk = any(k in user_q_lower for k in ("risk", "at-risk", "at risk", "probation", "failing", "intervention"))
+
     if pulse_data and pulse_data.get("analysis_type"):
         title = f"{pulse_data['analysis_type'].replace('_', ' ').upper()} REPORT"
-    elif "at risk" in user_query.lower() or "attention" in user_query.lower():
+    elif wants_risk:
         title = "ACADEMIC RISK ASSESSMENT REPORT"
+    elif metrics:
+        title = "STUDENT ANALYSIS REPORT"
+    elif any(k in user_q_lower for k in ("top ", "top-", "highest", "lowest", "rank", "best")):
+        title = f"{user_query.strip().upper()}" if len(user_query.strip()) <= 50 else "STUDENT RANKING RESULTS"
+    else:
+        title = "STUDENT RECORDS"
 
     sections.append("=" * 60)
     sections.append(title.center(60))
@@ -319,7 +327,7 @@ def _generate_fallback_text(
                 sections.append(_format_records_table(trows[:25]))
                 sections.append("")
     else:
-        # Fallback to legacy metrics
+        # Fallback to legacy metrics (only if metrics were calculated)
         if metrics:
             sections.append("KEY STATISTICS:")
             sections.append("-" * 40)
@@ -333,13 +341,14 @@ def _generate_fallback_text(
             sections.append("")
 
         if records:
-            sections.append(f"STUDENT RECORDS  ({len(records)} total):")
+            rec_header = f"STUDENT RECORD (1 result):" if len(records) == 1 else f"STUDENT RECORDS ({len(records)} total):"
+            sections.append(rec_header)
             sections.append("-" * 40)
-            sections.append(_format_records_table(records[:25]))
+            sections.append(_format_records_table(records))
             sections.append("")
 
-        # ── At-Risk Students Fallback ─────────────────────────────────────────
-        if records:
+        # ── At-Risk Students Fallback (strictly request-scoped) ───────────────
+        if records and wants_risk:
             at_risk = [
                 r for r in records
                 if (r.get("status") == "Probation" or float(r.get("cgpa", 10.0)) < 6.5)

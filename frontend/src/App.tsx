@@ -9,6 +9,7 @@ import { DatabasePreviewModal } from './components/DatabasePreviewModal';
 import { ModeSelectorModal } from './components/ModeSelectorModal';
 import { ConfirmationModal } from './components/ConfirmationModal';
 import { JsonViewerModal } from './components/JsonViewerModal';
+import { SqlViewerModal } from './components/SqlViewerModal';
 import { 
   AppMode, 
   OutputFormat, 
@@ -136,6 +137,18 @@ export default function App() {
     isOpen: false,
     title: '',
     data: null
+  });
+  const [sqlViewerState, setSqlViewerState] = useState<{
+    isOpen: boolean;
+    sql: string;
+    operation?: string;
+    table?: string;
+    requestedLimit?: number;
+    rowsReturned?: number;
+    queryIntent?: string;
+  }>({
+    isOpen: false,
+    sql: '',
   });
 
   // Toast Notifications
@@ -682,7 +695,18 @@ export default function App() {
           isExecuting={isExecuting}
           onOpenDataViewer={() => setIsDataViewerOpen(true)}
           onOpenDatabasePreview={() => setIsDbPreviewOpen(true)}
-          onOpenSqlViewer={(sql) => setJsonModalData({ isOpen: true, title: 'SQL Execution Trace', data: sql })}
+          onOpenSqlViewer={(sql) => {
+            const res = activeTurn?.result;
+            setSqlViewerState({
+              isOpen: true,
+              sql: sql || res?.queryExecuted || res?.sql || 'SELECT * FROM students;',
+              operation: res?.operation || 'SELECT',
+              table: res?.table || 'students',
+              requestedLimit: res?.requestedLimit,
+              rowsReturned: res?.rowsReturned || res?.data?.length,
+              queryIntent: activeTurn?.prompt,
+            });
+          }}
           onOpenPlanJson={() => setJsonModalData({ isOpen: true, title: 'Dynamic Plan Schema', data: activeTurn?.plan })}
           onExportCsv={handleExportCsv}
         />
@@ -718,6 +742,17 @@ export default function App() {
         students={activeTurn?.result?.data || students}
         sqlQuery={activeTurn?.result?.queryExecuted}
         onExportCsv={handleExportCsv}
+      />
+
+      <SqlViewerModal
+        isOpen={sqlViewerState.isOpen}
+        onClose={() => setSqlViewerState(prev => ({ ...prev, isOpen: false }))}
+        sqlQuery={sqlViewerState.sql}
+        operation={sqlViewerState.operation}
+        table={sqlViewerState.table}
+        requestedLimit={sqlViewerState.requestedLimit}
+        rowsReturned={sqlViewerState.rowsReturned}
+        queryIntent={sqlViewerState.queryIntent}
       />
 
       <JsonViewerModal

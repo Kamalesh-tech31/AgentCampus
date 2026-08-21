@@ -134,10 +134,11 @@ def _build_orchestration_result(
     output_format: str,
     output_file: Optional[str],
     affected_count: Optional[int] = None,
+    sql_metadata: Optional[dict] = None,
 ) -> OrchestrationResult:
     """
     Build and validate the OrchestrationResult contract model.
-    Preserves all existing fields for backward compatibility.
+    Preserves all existing fields for backward compatibility and attaches SQL inspection metadata.
     """
     from app.contracts.students import StudentRecord
 
@@ -155,18 +156,35 @@ def _build_orchestration_result(
                 try:
                     parsed_records.append(StudentRecord.model_validate(r))
                 except Exception:
-                    pass
+                    # Fall back to creating a StudentRecord with best effort
+                    try:
+                        parsed_records.append(StudentRecord(**r))
+                    except Exception:
+                        pass
+
+    # Extract metadata attributes
+    sql_meta = sql_metadata or {}
+    req_lim = sql_meta.get("requested_limit")
+    rows_ret = sql_meta.get("rows_returned", len(records))
+    op = sql_meta.get("operation", "SELECT" if sql and "SELECT" in sql.upper() else None)
+    tbl = sql_meta.get("table", "students")
 
     return OrchestrationResult(
         summary=summary,
         query_executed=sql,
         mutation_executed=sql if sql and any(kw in sql.upper() for kw in ("UPDATE", "INSERT", "DELETE", "ALTER", "CREATE")) else None,
-        affected_count=affected_count if affected_count is not None else (len(records) if records else None),
+        affected_count=affected_count if affected_count is not None else len(records),
         data=parsed_records if parsed_records else None,
         metrics=validated_metrics,
         csv_data=None,
         output_format=output_format,
         output_file=output_file,
+        sql=sql,
+        requested_limit=req_lim,
+        rows_returned=rows_ret,
+        operation=op,
+        table=tbl,
+        sql_metadata=sql_meta if sql_meta else None,
         success=True,
     )
 
@@ -317,6 +335,7 @@ class OutputAgent(BaseAgent):
             output_format=output_format,
             output_file=output_file,
             affected_count=affected_count,
+            sql_metadata=db_res if isinstance(db_res, dict) else {},
         )
 
         # ── Assemble AgentResult ──────────────────────────────────────────────

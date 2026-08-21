@@ -49,7 +49,13 @@ def _deterministic_fallback_plan(lens_output: Dict[str, Any]) -> Dict[str, Any]:
         or ""
     ).lower()
     tbl = lens_output.get("table") or input_intent.get("table") or "students"
-    params = lens_output.get("params") or input_intent.get("params") or {}
+    params = dict(lens_output.get("params") or input_intent.get("params") or {})
+    dept_val = input_intent.get("department") or lens_output.get("department")
+    status_val = input_intent.get("status_filter") or lens_output.get("status_filter")
+    sort_val = input_intent.get("sort") or lens_output.get("sort") or params.get("sort")
+    limit_val = input_intent.get("limit") or lens_output.get("limit") or params.get("limit")
+    fields_val = input_intent.get("fields") or lens_output.get("fields") or params.get("fields")
+
     if not params.get("filters") and input_intent.get("filters"):
         raw_flts = input_intent.get("filters", [])
         norm_flts = []
@@ -59,6 +65,21 @@ def _deterministic_fallback_plan(lens_output: Dict[str, Any]) -> Dict[str, Any]:
             norm_flts.append({"field": f.get("field"), "op": op_map.get(op_str, op_str), "value": f.get("value")})
         params["filters"] = norm_flts
 
+    if dept_val and not any(f.get("field") == "department" for f in params.get("filters", [])):
+        params.setdefault("filters", []).append({"field": "department", "op": "eq", "value": dept_val})
+
+    if status_val and not any(f.get("field") == "status" for f in params.get("filters", [])):
+        params.setdefault("filters", []).append({"field": "status", "op": "eq", "value": status_val})
+
+    if sort_val:
+        params["sort"] = sort_val
+    if limit_val is not None:
+        params["limit"] = limit_val
+    if fields_val:
+        params["fields"] = fields_val
+
+    if params.get("filters") and action in ("get_all_rows", None, ""):
+        action = "filter_rows"
 
     cols = get_table_columns(tbl)
     numeric_fields = [k for k, v in cols.items() if str(v).lower() in ("numeric", "int", "integer", "float", "number") or k in ("cgpa", "attendance", "credits", "semester", "backlogs")]
@@ -78,7 +99,9 @@ def _deterministic_fallback_plan(lens_output: Dict[str, Any]) -> Dict[str, Any]:
         or input_intent.get("operation") == "analytics"
     ):
         dept_filters = []
-        if "computer science" in query or "cse" in query:
+        if dept_val:
+            dept_filters.append({"field": "department", "op": "eq", "value": dept_val})
+        elif "computer science" in query or "cse" in query:
             dept_filters.append({"field": "department", "op": "eq", "value": "Computer Science"})
         elif "ai & ml" in query or "ai and ml" in query or "aiml" in query:
             dept_filters.append({"field": "department", "op": "eq", "value": "AI & ML"})
@@ -89,9 +112,11 @@ def _deterministic_fallback_plan(lens_output: Dict[str, Any]) -> Dict[str, Any]:
         elif "civil" in query:
             dept_filters.append({"field": "department", "op": "eq", "value": "Civil"})
         
+        analytics_params = dict(params)
         if dept_filters:
-            return {"action": "filter_rows", "table": tbl, "params": {"filters": dept_filters}}
-        return {"action": "get_all_rows", "table": tbl, "params": {}}
+            analytics_params["filters"] = dept_filters
+            return {"action": "filter_rows", "table": tbl, "params": analytics_params}
+        return {"action": "get_all_rows", "table": tbl, "params": analytics_params}
 
     if "along with" in query or "and their" in query or ("student" in query and "course" in query):
         dept_val = None
@@ -272,7 +297,7 @@ def _deterministic_fallback_plan(lens_output: Dict[str, Any]) -> Dict[str, Any]:
         return {"action": "count_rows", "table": tbl, "params": {}}
 
     # Check for direct filter keys in lens_output or query dynamically
-    filters = []
+    filters = list(params.get("filters") or input_intent.get("filters") or [])
     if cols:
         for col_name in cols.keys():
             if col_name in lens_output:
@@ -312,6 +337,10 @@ def _deterministic_fallback_plan(lens_output: Dict[str, Any]) -> Dict[str, Any]:
     params_out = {"filters": filters} if filters else {}
     if req_fields:
         params_out["fields"] = req_fields
+    if "limit" in params:
+        params_out["limit"] = params["limit"]
+    if "sort" in params:
+        params_out["sort"] = params["sort"]
 
     if filters:
         return {"action": "filter_rows", "table": tbl, "params": params_out}
@@ -435,6 +464,41 @@ def _post_validate_plan(plan: Dict[str, Any], lens_output: Dict[str, Any]) -> Di
                 "params": {"message": f"Aggregate '{agg}' is invalid. Allowed aggregates: {sorted(list(ALLOWED_AGGREGATES))}"}
             }
 
+    # 4. Strict Intent Preservation Guardrail (Ensure LLM never drops requested limit, sort, or filters)
+    input_intent = (
+        lens_output.get("input", {}).get("structured_intent", {})
+        if isinstance(lens_output.get("input"), dict)
+        else (lens_output.get("structured_intent", {}) if isinstance(lens_output.get("structured_intent"), dict) else {})
+    )
+
+    req_limit = input_intent.get("limit") if input_intent.get("limit") is not None else lens_output.get("limit")
+    req_sort = input_intent.get("sort") or lens_output.get("sort")
+    req_dept = input_intent.get("department") or lens_output.get("department")
+    req_status = input_intent.get("status_filter") or lens_output.get("status_filter")
+
+    if req_limit is not None and plan.get("action") in ("filter_rows", "get_all_rows", "compute_filter"):
+        try:
+            params["limit"] = int(req_limit)
+        except (ValueError, TypeError):
+            pass
+
+    if req_sort and plan.get("action") in ("filter_rows", "get_all_rows", "compute_filter"):
+        params["sort"] = req_sort
+
+    if req_dept and plan.get("action") in ("filter_rows", "get_all_rows"):
+        cur_filters = params.setdefault("filters", [])
+        if not any(f.get("field") == "department" for f in cur_filters if isinstance(f, dict)):
+            cur_filters.append({"field": "department", "op": "eq", "value": req_dept})
+        if cur_filters and plan.get("action") == "get_all_rows":
+            plan["action"] = "filter_rows"
+
+    if req_status and plan.get("action") in ("filter_rows", "get_all_rows"):
+        cur_filters = params.setdefault("filters", [])
+        if not any(f.get("field") == "status" for f in cur_filters if isinstance(f, dict)):
+            cur_filters.append({"field": "status", "op": "eq", "value": req_status})
+        if cur_filters and plan.get("action") == "get_all_rows":
+            plan["action"] = "filter_rows"
+
     return plan
 
 
@@ -444,16 +508,32 @@ def vault_llm_plan(lens_output: Dict[str, Any]) -> Dict[str, Any]:
     and dynamic live schema. Automatically fails over across Groq API keys and models on rate limits.
     Returns JSON matching {"action": "...", "table": "...", "params": {...}}.
     """
-    # If lens_output is already a structured dictionary specifying a valid action, return directly
-    action = lens_output.get("action")
+    # If lens_output or its structured_intent already specifies a valid action, return directly
+    input_intent = (
+        lens_output.get("input", {}).get("structured_intent", {})
+        if isinstance(lens_output.get("input"), dict)
+        else (lens_output.get("structured_intent", {}) if isinstance(lens_output.get("structured_intent"), dict) else {})
+    )
+    action = lens_output.get("action") or input_intent.get("action")
     if action in ALLOWED_ACTIONS:
-        params = dict(lens_output.get("params", {}))
-        row_id = lens_output.get("row_id") or lens_output.get("rowId") or lens_output.get("id") or params.get("row_id") or params.get("rowId") or params.get("id")
+        params = dict(lens_output.get("params") or input_intent.get("params") or {})
+        row_id = (
+            lens_output.get("row_id")
+            or lens_output.get("rowId")
+            or lens_output.get("id")
+            or input_intent.get("row_id")
+            or input_intent.get("rowId")
+            or input_intent.get("id")
+            or params.get("row_id")
+            or params.get("rowId")
+            or params.get("id")
+        )
         if row_id:
             params["row_id"] = row_id
+        table = lens_output.get("table") or input_intent.get("table") or "students"
         return _post_validate_plan({
             "action": action,
-            "table": lens_output.get("table", "students"),
+            "table": table,
             "params": params,
         }, lens_output)
 

@@ -51,12 +51,19 @@ class MotherAgent:
     def classify_intent(self, prompt: str) -> DynamicPlanRequestType:
         prompt_lower = prompt.lower()
 
+        # Pure ranking/top-N queries are read queries, not statistical analytics
+        is_ranking_query = any(
+            rk in prompt_lower for rk in ("top ", "top-", "highest ", "lowest ", "best ")
+        ) and any(
+            ent in prompt_lower for ent in ("student", "students", "record", "records", "cse", "cs", "ece", "mech", "civil")
+        ) and not any(
+            stat in prompt_lower for stat in ("average", "avg", "mean", "correlation", "variance", "std dev", "distribution", "breakdown")
+        )
+
         analytics_keywords = [
             "average",
             "avg",
-            "highest",
-            "lowest",
-            "metrics",
+            "mean",
             "percentile",
             "analytics",
             "analyze",
@@ -70,13 +77,12 @@ class MotherAgent:
             "at-risk",
             "risk",
             "probation",
-            "performance",
             "compare",
             "correlation",
             "outlier",
             "standard deviation",
         ]
-        if any(kw in prompt_lower for kw in analytics_keywords):
+        if not is_ranking_query and any(kw in prompt_lower for kw in analytics_keywords):
             return "analytics"
 
         write_keywords = [
@@ -113,7 +119,9 @@ class MotherAgent:
 
         plan_agents = [s.agent for s in workflow.plan.steps] if workflow.plan else []
         requires_analytics = (
-            "analytics" in plan_agents or workflow.request_type == "analytics"
+            "analytics" in plan_agents
+            if plan_agents
+            else (workflow.request_type == "analytics")
         )
 
         if (

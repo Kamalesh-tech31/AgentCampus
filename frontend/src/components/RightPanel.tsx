@@ -192,26 +192,44 @@ export const RightPanel: React.FC<RightPanelProps> = ({
               <div className="space-y-3 pt-1">
                 <div className="flex items-center justify-between p-2.5 rounded-xl bg-blue-50/70 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 text-xs">
                   <span className="text-blue-900 dark:text-blue-300 font-medium">Retrieved Records:</span>
-                  <span className="font-bold text-blue-700 dark:text-blue-400">
-                    {records.length} {records.length === 1 ? 'record' : 'records'}
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-bold text-blue-700 dark:text-blue-400">
+                      {records.length} {records.length === 1 ? 'record' : 'records'}
+                    </span>
+                    {result.requestedLimit !== undefined && result.requestedLimit !== null && (
+                      <span className="text-[10px] text-slate-500 font-normal">
+                        (limit: {result.requestedLimit})
+                      </span>
+                    )}
+                  </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-3 gap-1.5">
                   <button
                     onClick={onOpenDataViewer}
-                    className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs transition-all cursor-pointer shadow-xs active:scale-95"
+                    className="flex items-center justify-center gap-1 py-2 px-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs transition-all cursor-pointer shadow-xs active:scale-95"
+                    title="View Data Table"
                   >
                     <TableIcon className="w-3.5 h-3.5" />
-                    <span>View Data Table</span>
+                    <span>Data Table</span>
+                  </button>
+
+                  <button
+                    onClick={() => onOpenSqlViewer(result.queryExecuted || result.sql || 'SELECT * FROM students;')}
+                    className="flex items-center justify-center gap-1 py-2 px-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs transition-all cursor-pointer shadow-xs active:scale-95"
+                    title="View Executed SQL Query"
+                  >
+                    <Code className="w-3.5 h-3.5" />
+                    <span>View SQL</span>
                   </button>
 
                   <button
                     onClick={onExportCsv}
-                    className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-600 font-semibold text-xs transition-all cursor-pointer active:scale-95"
+                    className="flex items-center justify-center gap-1 py-2 px-2 rounded-xl bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-600 font-semibold text-xs transition-all cursor-pointer active:scale-95"
+                    title="Export CSV / Excel"
                   >
                     <Download className="w-3.5 h-3.5" />
-                    <span>Download Excel</span>
+                    <span>Export</span>
                   </button>
                 </div>
               </div>
@@ -230,16 +248,27 @@ export const RightPanel: React.FC<RightPanelProps> = ({
                   </p>
                 </div>
 
-                <button
-                  onClick={onOpenDatabasePreview}
-                  className="w-full flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-semibold text-xs transition-all cursor-pointer shadow-xs active:scale-95"
-                >
-                  <Database className="w-3.5 h-3.5" />
-                  <span>Inspect Live Database Preview</span>
-                </button>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={onOpenDatabasePreview}
+                    className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-semibold text-xs transition-all cursor-pointer shadow-xs active:scale-95"
+                  >
+                    <Database className="w-3.5 h-3.5" />
+                    <span>Preview DB</span>
+                  </button>
+
+                  <button
+                    onClick={() => onOpenSqlViewer(result.mutationExecuted || result.queryExecuted || result.sql || '')}
+                    className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-600 font-semibold text-xs transition-all cursor-pointer active:scale-95"
+                  >
+                    <Code className="w-3.5 h-3.5" />
+                    <span>View SQL</span>
+                  </button>
+                </div>
               </div>
             )}
 
+            {/* 2b. MODIFY MODE FAILED RESULT */}
             {mode === 'modify' && result.success === false && (
               <div className="space-y-3 pt-1">
                 <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 space-y-1.5">
@@ -302,16 +331,26 @@ export const RightPanel: React.FC<RightPanelProps> = ({
                   </div>
                 )}
 
-                {/* View Data Grid Button */}
-                {records.length > 0 && (
+                {/* View Data Grid & View SQL Buttons */}
+                <div className="grid grid-cols-2 gap-2">
+                  {records.length > 0 && (
+                    <button
+                      onClick={onOpenDataViewer}
+                      className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-600 font-semibold text-xs transition-all cursor-pointer"
+                    >
+                      <TableIcon className="w-3.5 h-3.5" />
+                      <span>Dataset ({records.length})</span>
+                    </button>
+                  )}
+
                   <button
-                    onClick={onOpenDataViewer}
-                    className="w-full flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-600 font-semibold text-xs transition-all cursor-pointer"
+                    onClick={() => onOpenSqlViewer(result.queryExecuted || result.sql || 'SELECT * FROM students;')}
+                    className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-600 font-semibold text-xs transition-all cursor-pointer"
                   >
-                    <TableIcon className="w-3.5 h-3.5" />
-                    <span>View Analyzed Dataset ({records.length} rows)</span>
+                    <Code className="w-3.5 h-3.5" />
+                    <span>View SQL</span>
                   </button>
-                )}
+                </div>
               </div>
             )}
 
@@ -321,29 +360,62 @@ export const RightPanel: React.FC<RightPanelProps> = ({
                 onClick={() => setShowTechnicalDetails(!showTechnicalDetails)}
                 className="flex items-center justify-between w-full text-[11px] font-medium text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 cursor-pointer"
               >
-                <span>Technical Trace</span>
+                <span>Technical Execution Trace</span>
                 {showTechnicalDetails ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
               </button>
 
               {showTechnicalDetails && (
-                <div className="mt-2.5 pt-2 border-t border-slate-100 dark:border-slate-700 grid grid-cols-2 gap-2 text-xs">
-                  {result.queryExecuted && (
+                <div className="mt-2.5 pt-2 border-t border-slate-100 dark:border-slate-700 space-y-2.5 text-xs">
+                  {/* Trace Steps Breakdown */}
+                  <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 space-y-2 font-mono text-[11px]">
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="text-slate-400 font-sans font-semibold">1. Request Intent:</span>
+                      <span className="text-slate-800 dark:text-slate-200 font-bold truncate max-w-[160px]">
+                        {activeTurnPrompt || 'Query'}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-400 font-sans font-semibold">2. Target Table:</span>
+                      <span className="text-blue-600 dark:text-blue-400 font-bold">
+                        {result.table || 'students'}
+                      </span>
+                    </div>
+
+                    {result.requestedLimit !== undefined && result.requestedLimit !== null && (
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-400 font-sans font-semibold">3. Requested Limit:</span>
+                        <span className="text-purple-600 dark:text-purple-400 font-bold">
+                          {result.requestedLimit}
+                        </span>
+                      </div>
+                    )}
+
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-400 font-sans font-semibold">4. Rows Returned:</span>
+                      <span className="text-emerald-600 dark:text-emerald-400 font-bold">
+                        {records.length} {records.length === 1 ? 'row' : 'rows'}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 text-xs">
                     <button
-                      onClick={() => onOpenSqlViewer(result.queryExecuted!)}
+                      onClick={() => onOpenSqlViewer(result.queryExecuted || result.mutationExecuted || result.sql || 'SELECT * FROM students;')}
                       className="flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg bg-slate-50 dark:bg-slate-700/60 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-600 text-[11px] font-medium cursor-pointer"
                     >
-                      <Code className="w-3.5 h-3.5 text-slate-500" />
-                      <span>View SQL</span>
+                      <Code className="w-3.5 h-3.5 text-blue-500" />
+                      <span>Inspect SQL</span>
                     </button>
-                  )}
 
-                  <button
-                    onClick={onOpenPlanJson}
-                    className="flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg bg-slate-50 dark:bg-slate-700/60 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-600 text-[11px] font-medium cursor-pointer"
-                  >
-                    <FileText className="w-3.5 h-3.5 text-slate-500" />
-                    <span>Plan JSON</span>
-                  </button>
+                    <button
+                      onClick={onOpenPlanJson}
+                      className="flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg bg-slate-50 dark:bg-slate-700/60 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-600 text-[11px] font-medium cursor-pointer"
+                    >
+                      <FileText className="w-3.5 h-3.5 text-purple-500" />
+                      <span>Plan JSON</span>
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
